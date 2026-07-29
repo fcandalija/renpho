@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RENPHO Metrics Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel-2: #1e222d;
+    --border: #2a2f3d;
+    --text: #e7eaf0;
+    --muted: #98a0b3;
+    --accent: #4f9cf9;
+    --accent-2: #f7b955;
+    --grid: #262b38;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+  }
+  .title-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .controls {
+    display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .group { display: flex; align-items: center; gap: 6px; }
+  .group > .label { color: var(--muted); font-size: 12px; margin-right: 2px; }
+  button, select, .filebtn {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  button:hover, .filebtn:hover { background: #262b38; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; border-right: 1px solid var(--border); }
+  .seg button:last-child { border-right: none; }
+  .seg button.active { background: var(--accent); color: #08111f; font-weight: 600; }
+  .range-label { font-size: 13px; color: var(--text); min-width: 200px; }
+  .nav-btn { width: 34px; text-align: center; padding: 6px 0; }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
+  .search input {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 6px 10px; font-size: 13px; width: 180px;
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 16px;
+    padding: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px 14px;
+    display: flex; flex-direction: column;
+  }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .card-title { font-size: 14px; font-weight: 600; }
+  .card-stats { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .card-stats .delta.bad { color: #ff6b6b; }
+  .card-stats .delta.good { color: #4ade80; }
+  .canvas-wrap { position: relative; width: 100%; height: 200px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .tooltip {
+    position: absolute; pointer-events: none; z-index: 5;
+    background: #0b0d13; border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 8px; font-size: 12px; white-space: nowrap;
+    transform: translate(-50%, -115%); opacity: 0; transition: opacity .08s;
+  }
+  .tooltip .tt-val { font-weight: 600; }
+  .tooltip .tt-date { color: var(--muted); }
+  .empty-note { color: var(--muted); font-size: 12px; text-align: center; padding: 40px 0; }
+  .footer { color: var(--muted); font-size: 11px; padding: 4px 20px 24px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>RENPHO Metrics Dashboard</h1>
+    <span class="sub" id="dataset-info"></span>
+  </div>
+  <div class="controls">
+    <div class="group seg" id="mode-seg">
+      <button data-mode="week">Week</button>
+      <button data-mode="month">Month</button>
+      <button data-mode="all">All</button>
+    </div>
+    <div class="group">
+      <button class="nav-btn" id="prev" title="Previous period">‹</button>
+      <span class="range-label" id="range-label"></span>
+      <button class="nav-btn" id="next" title="Next period">›</button>
+      <button id="latest" title="Jump to most recent period">Latest</button>
+    </div>
+    <div class="group">
+      <label class="chk"><input type="checkbox" id="reg-all" checked /> Regression (all)</label>
+    </div>
+    <div class="group search">
+      <input type="text" id="search" placeholder="Filter metrics…" />
+    </div>
+    <div class="group">
+      <label class="filebtn">Load CSV…<input type="file" id="file" accept=".csv,text/csv" hidden /></label>
+    </div>
+  </div>
+</header>
+
+<div id="grid"></div>
+<div class="footer" id="footer"></div>
+
+<!-- Embedded RENPHO CSV. Replaced by a picked file at runtime if the user loads one. -->
+<script id="embedded-csv" type="text/plain">No.,Fecha,Hora,Peso(lb),IMC,Porcentaje de grasa corporal(%),Masa grasa corporal(lb),Porcentaje de músculo(%),Masa muscular(lb),Porcentaje de músculo esquelético(%),Masa muscular esquelética(lb),Porcentaje óseo(%),Masa ósea(lb),Porcentaje de proteína(%),Masa proteica(lb),Porcentaje de agua corporal(%),Masa de agua corporal(lb),Peso corporal sin grasa(lb),Grasa subcutánea(%),Grasa visceral,Tasa Metabólica Basal(kcal),Edad metabólica,WHR (Proporción cintura-cadera),Peso óptimo(lb),Nivel de peso,Tipo de cuerpo,Grasa Brazo izquierdo(lb),Grasa Brazo izquierdo(%),Grasa Brazo izquierdo estándar(lb),Grasa Brazo derecho(lb),Grasa Brazo derecho(%),Grasa Brazo derecho estándar(lb),Grasa Torso(lb),Grasa Torso(%),Grasa Torso estándar(lb),Grasa Pierna izquierda(lb),Grasa Pierna izquierda(%),Grasa Pierna izquierda estándar(lb),Grasa Pierna derecha(lb),Grasa Pierna derecha(%),Grasa Pierna derecha estándar(lb),Músculo Brazo izquierdo(lb),Músculo Brazo izquierdo(%),Músculo Brazo izquierdo estándar(lb),Músculo Brazo derecho(lb),Músculo Brazo derecho(%),Músculo Brazo derecho estándar(lb),Músculo Torso(lb),Músculo Torso(%),Músculo Torso estándar(lb),Músculo Pierna izquierda(lb),Músculo Pierna izquierda(%),Músculo Pierna izquierda estándar(lb),Músculo Pierna derecha(lb),Músculo Pierna derecha(%),Músculo Pierna derecha estándar(lb)
+1,7/28/26,5:33:46 AM,185.0,24.0,12.0,22.2,82.1,151.8,50.6,93.6,5.8,10.8,17.6,32.6,64.5,119.4,162.8,8.6,2,1964,46,0.76,169.6,Estándar,Musculoso,1.0,55.4,1.6,0.8,52.7,1.6,12.6,116.1,10.8,3.8,91.2,4.2,3.8,91.2,4.2,9.4,114.9,8.2,9.4,116.0,8.2,71.0,110.0,64.6,27.0,120.0,22.6,27.0,120.0,22.6
+2,7/27/26,7:14:52 AM,184.8,24.0,12.5,23.2,81.7,151.0,50.4,93.2,5.8,10.8,17.5,32.4,64.2,118.6,161.6,9.0,2,1955,46,0.76,169.6,Estándar,Musculoso,1.0,59.5,1.6,1.0,56.8,1.6,12.8,119.2,10.8,4.0,92.8,4.2,4.0,93.3,4.2,9.2,114.1,8.2,9.4,115.2,8.2,70.8,109.5,64.6,27.0,119.4,22.6,27.0,119.5,22.6
+3,7/26/26,6:13:13 AM,185.2,24.0,12.4,23.0,81.6,151.2,50.4,93.4,5.8,10.8,17.5,32.4,64.1,118.6,162.2,8.9,2,1957,46,0.77,169.6,Estándar,Musculoso,1.0,59.5,1.6,1.0,56.8,1.6,13.2,121.8,10.8,4.0,93.8,4.2,4.0,93.8,4.2,9.4,114.4,8.2,9.4,115.2,8.2,70.8,109.5,64.6,27.0,119.3,22.6,27.0,119.3,22.6
+4,7/25/26,7:21:20 AM,183.4,23.8,12.3,22.6,81.9,150.2,50.5,92.6,5.9,10.8,17.5,32.0,64.3,117.8,160.8,8.8,2,1945,46,0.78,169.6,Estándar,Musculoso,0.8,54.1,1.6,0.8,52.7,1.6,12.8,117.5,10.8,3.8,91.2,4.2,3.8,91.2,4.2,9.2,114.2,8.0,9.2,114.7,8.0,70.2,109.2,64.4,26.8,118.9,22.4,26.8,118.9,22.4
+5,7/25/26,7:20:22 AM,183.4,23.8,12.3,22.6,81.9,150.2,50.5,92.6,5.9,10.8,17.5,32.0,64.3,117.8,160.8,8.8,2,1945,46,0.78,169.6,Estándar,Musculoso,0.8,54.1,1.6,0.8,52.7,1.6,12.8,117.5,10.8,3.8,91.2,4.2,3.8,91.2,4.2,9.2,114.2,8.0,9.2,114.7,8.0,70.2,109.2,64.4,26.8,118.9,22.4,26.8,118.9,22.4
+6,7/24/26,11:14:31 AM,181.8,23.6,11.9,21.6,82.2,149.6,50.7,92.2,5.9,10.8,17.6,32.0,64.6,117.4,160.2,8.5,2,1940,46,0.77,169.6,Estándar,Musculoso,0.8,48.7,1.6,0.8,46.0,1.6,12.2,113.5,10.8,3.8,88.6,4.2,3.8,88.6,4.2,9.2,114.5,8.0,9.2,115.0,8.0,70.0,109.2,64.2,26.6,119.0,22.4,26.6,119.0,22.4
+7,7/24/26,6:29:56 AM,181.6,23.5,11.4,20.8,82.7,150.2,51.0,92.6,6.0,10.8,17.7,32.2,64.9,117.8,160.8,8.2,2,1945,46,0.75,169.6,Estándar,Musculoso,0.8,47.3,1.6,0.8,46.0,1.6,12.0,110.0,10.8,3.6,85.0,4.2,3.6,85.0,4.2,9.2,114.3,8.0,9.2,115.1,8.0,70.2,109.7,64.0,26.8,119.4,22.4,26.8,119.4,22.4
+8,7/23/26,6:29:39 AM,180.6,23.4,11.2,20.2,82.9,149.6,51.1,92.2,6.0,10.8,17.8,32.2,65.2,117.8,160.4,8.0,1,1942,46,0.75,169.6,Estándar,Musculoso,0.8,44.6,1.6,0.6,41.9,1.6,11.6,106.9,10.8,3.6,83.4,4.2,3.6,83.4,4.2,9.2,114.0,8.0,9.2,115.1,8.0,70.2,109.7,64.0,26.6,119.6,22.4,26.6,119.6,22.4
+9,7/22/26,6:28:08 AM,182.2,23.6,11.0,20.0,83.0,151.2,51.2,93.2,5.9,10.8,17.8,32.4,65.2,118.8,162.2,7.9,1,1958,46,0.75,169.6,Estándar,Musculoso,0.8,43.3,1.6,0.6,40.6,1.6,11.6,107.7,10.8,3.6,83.4,4.2,3.6,83.4,4.2,9.4,115.3,8.0,9.4,116.1,8.0,70.8,110.5,64.2,27.0,120.3,22.4,27.0,120.4,22.4
+10,7/21/26,6:57:52 AM,181.6,23.6,11.1,20.2,82.9,150.6,51.1,92.8,5.9,10.8,17.8,32.4,65.1,118.2,161.4,8.0,2,1951,46,0.76,169.6,Estándar,Musculoso,0.8,46.0,1.6,0.6,41.9,1.6,11.6,107.7,10.8,3.6,83.9,4.2,3.6,84.5,4.2,9.2,114.5,8.0,9.4,115.6,8.0,70.6,110.1,64.0,26.8,119.9,22.4,26.8,119.9,22.4
+11,7/20/26,7:20:24 AM,183.6,23.8,11.7,21.4,82.4,151.4,50.9,93.4,5.9,10.8,17.7,32.4,64.8,119.0,162.2,8.4,2,1959,46,0.76,169.6,Estándar,Musculoso,0.8,51.4,1.6,0.8,48.7,1.6,12.4,114.3,10.8,3.8,88.1,4.2,3.8,88.1,4.2,9.2,114.7,8.0,9.4,116.1,8.0,71.0,110.1,64.4,27.0,120.1,22.4,27.0,120.1,22.4
+12,7/19/26,6:37:01 AM,183.0,23.7,11.0,20.2,83.0,151.8,51.2,93.6,5.9,10.8,17.8,32.6,65.2,119.4,162.8,7.9,2,1964,46,0.74,169.6,Estándar,Musculoso,0.8,47.3,1.6,0.6,41.9,1.6,12.0,110.8,10.8,3.6,84.5,4.2,3.6,84.5,4.2,9.4,115.0,8.0,9.4,116.6,8.0,71.2,110.6,64.4,27.0,120.5,22.4,27.0,120.5,22.4
+13,7/18/26,6:48:39 AM,183.0,23.7,10.8,19.8,83.3,152.4,51.4,94.0,6.0,11.0,17.9,32.8,65.4,119.6,163.2,7.8,1,1970,46,0.74,169.6,Estándar,Musculoso,0.8,43.3,1.6,0.6,39.2,1.6,11.6,106.9,10.8,3.6,82.4,4.2,3.6,82.4,4.2,9.4,115.5,8.0,9.4,117.2,8.0,71.4,111.1,64.4,27.2,121.0,22.4,27.2,121.0,22.4
+14,7/17/26,6:41:22 AM,182.0,23.6,10.5,19.2,83.5,152.0,51.5,93.8,5.9,10.8,17.9,32.6,65.6,119.4,162.8,7.5,1,1965,46,0.73,169.6,Estándar,Musculoso,0.6,40.6,1.6,0.6,36.5,1.6,11.2,103.9,10.8,3.4,80.8,4.2,3.4,80.8,4.2,9.4,115.6,8.0,9.4,116.9,8.0,71.2,110.9,64.2,27.0,121.0,22.4,27.0,121.0,22.4
+15,7/16/26,6:57:22 AM,182.6,23.7,11.0,20.0,83.0,151.6,51.2,93.4,5.9,10.8,17.8,32.4,65.2,119.0,162.4,7.9,1,1961,46,0.75,169.6,Estándar,Musculoso,0.8,44.6,1.6,0.6,40.6,1.6,11.6,106.9,10.8,3.6,83.9,4.2,3.6,84.5,4.2,9.4,115.6,8.0,9.4,116.9,8.0,71.0,110.5,64.2,27.0,120.5,22.4,27.0,120.5,22.4
+16,7/15/26,6:50:13 AM,184.2,23.9,11.1,20.4,82.9,152.6,51.2,94.4,6.0,11.0,17.8,32.8,65.1,120.0,163.8,8.0,2,1973,46,0.73,169.6,Estándar,Musculoso,0.8,47.3,1.6,0.8,43.3,1.6,12.0,111.4,10.8,3.6,85.5,4.2,3.6,86.0,4.2,9.4,115.8,8.2,9.6,117.4,8.2,71.6,110.9,64.6,27.2,121.0,22.6,27.2,121.1,22.6
+17,7/14/26,7:04:07 AM,185.0,24.0,11.8,21.8,82.3,152.4,50.8,94.0,6.0,11.0,17.6,32.6,64.7,119.8,163.2,8.5,2,1969,46,0.75,169.6,Estándar,Musculoso,0.8,54.1,1.6,0.8,50.0,1.6,12.6,115.9,10.8,3.8,90.2,4.2,3.8,90.7,4.2,9.4,115.5,8.2,9.4,116.5,8.2,71.4,110.3,64.6,27.2,120.5,22.6,27.2,120.6,22.6
+18,7/13/26,7:14:15 AM,183.8,23.8,12.0,22.0,82.1,151.0,50.7,93.2,5.9,10.8,17.6,32.4,64.5,118.6,161.8,8.6,2,1955,46,0.77,169.6,Estándar,Musculoso,0.8,54.1,1.6,0.8,51.4,1.6,12.4,114.7,10.8,3.8,90.7,4.2,3.8,91.2,4.2,9.4,114.7,8.2,9.4,115.5,8.2,70.8,109.7,64.4,27.0,119.8,22.6,27.0,119.8,22.6
+19,7/3/26,6:44:43 AM,182.0,23.6,11.5,21.0,82.6,150.4,50.9,92.6,5.9,10.8,17.7,32.2,64.9,118.2,161.0,8.3,2,1947,46,0.77,169.6,Estándar,Musculoso,0.8,48.7,1.6,0.8,46.0,1.6,11.8,109.2,10.8,3.6,86.5,4.2,3.6,86.5,4.2,9.2,114.5,8.0,9.4,115.3,8.0,70.4,109.7,64.2,26.8,119.6,22.4,26.8,119.6,22.4
+20,7/2/26,6:16:02 AM,181.6,23.5,11.2,20.4,82.9,150.6,51.1,92.8,6.0,10.8,17.8,32.4,65.1,118.2,161.2,8.0,2,1950,46,0.76,169.6,Estándar,Musculoso,0.8,46.0,1.6,0.8,43.3,1.6,11.4,105.7,10.8,3.6,84.5,4.2,3.6,84.5,4.2,9.2,115.1,8.0,9.4,115.6,8.0,70.4,110.0,64.0,26.8,119.9,22.4,26.8,119.9,22.4
+21,7/1/26,6:08:23 AM,182.0,23.6,11.5,21.0,82.6,150.4,50.9,92.6,5.9,10.8,17.7,32.2,64.9,118.2,161.2,8.3,2,1948,46,0.76,169.6,Estándar,Musculoso,0.8,48.7,1.6,0.8,47.3,1.6,11.8,109.0,10.8,3.6,86.5,4.2,3.8,87.1,4.2,9.2,114.5,8.0,9.4,115.3,8.0,70.4,109.7,64.2,26.8,119.7,22.4,26.8,119.8,22.4
+22,6/30/26,7:03:26 AM,182.8,23.7,11.3,20.6,82.7,151.2,51.0,93.2,5.9,10.8,17.7,32.4,65.0,118.8,162.2,8.1,2,1957,46,0.74,169.6,Estándar,Musculoso,0.8,48.7,1.6,0.8,46.0,1.6,11.8,108.8,10.8,3.6,86.5,4.2,3.6,86.5,4.2,9.2,114.7,8.0,9.4,115.8,8.0,70.8,110.2,64.2,27.0,120.2,22.4,27.0,120.2,22.4
+23,6/29/26,7:00:43 AM,185.4,24.0,12.1,22.4,82.0,152.0,50.6,93.8,5.9,11.0,17.6,32.6,64.4,119.4,163.0,8.7,2,1966,46,0.74,169.6,Estándar,Musculoso,1.0,56.8,1.6,0.8,54.1,1.6,12.6,117.3,10.8,4.0,92.8,4.2,4.0,92.8,4.2,9.4,114.9,8.2,9.4,115.7,8.2,71.2,110.0,64.8,27.2,120.2,22.6,27.2,120.2,22.6
+24,6/28/26,7:04:23 AM,187.2,24.3,12.4,23.2,81.8,153.2,50.5,94.6,5.9,11.0,17.5,32.8,64.2,120.2,164.0,8.9,2,1977,46,0.75,169.6,Estándar,Musculoso,1.0,60.8,1.6,1.0,56.8,1.6,13.2,121.4,10.8,4.0,94.8,4.2,4.0,94.3,4.2,9.4,115.1,8.2,9.6,116.2,8.2,71.6,110.3,65.0,27.4,120.4,22.8,27.4,120.4,22.8
+25,6/27/26,6:48:06 AM,185.6,24.1,12.1,22.4,82.1,152.4,50.7,94.0,5.9,11.0,17.6,32.6,64.5,119.6,163.0,8.7,2,1969,46,0.77,169.6,Estándar,Musculoso,1.0,55.4,1.6,0.8,52.7,1.6,12.6,115.7,10.8,3.8,91.2,4.2,3.8,91.2,4.2,9.4,115.5,8.2,9.4,116.5,8.2,71.4,110.2,64.8,27.2,120.3,22.6,27.2,120.2,22.6
+26,6/26/26,5:52:29 AM,182.6,23.7,11.8,21.6,82.3,150.4,50.7,92.6,5.9,10.8,17.6,32.2,64.6,118.0,161.0,8.5,2,1947,46,0.77,169.6,Estándar,Musculoso,0.8,52.7,1.6,0.8,48.7,1.6,12.4,113.7,10.8,3.8,88.6,4.2,3.8,88.6,4.2,9.2,113.9,8.0,9.4,115.6,8.0,70.4,109.5,64.2,26.8,119.4,22.4,26.8,119.4,22.4
+27,6/25/26,7:11:04 AM,182.6,23.7,11.9,21.8,82.3,150.2,50.7,92.6,5.9,10.8,17.6,32.2,64.6,118.0,160.8,8.5,2,1946,46,0.77,169.6,Estándar,Musculoso,0.8,54.1,1.6,0.8,48.7,1.6,12.4,114.5,10.8,3.8,88.6,4.2,3.8,88.6,4.2,9.2,113.7,8.0,9.4,115.3,8.0,70.4,109.5,64.2,26.8,119.3,22.4,26.8,119.3,22.4
+28,6/25/26,7:09:08 AM,182.6,23.7,11.9,21.8,82.3,150.2,50.7,92.6,5.9,10.8,17.6,32.2,64.6,118.0,160.8,8.5,2,1946,46,0.77,169.6,Estándar,Musculoso,0.8,54.1,1.6,0.8,48.7,1.6,12.4,114.5,10.8,3.8,88.6,4.2,3.8,88.6,4.2,9.2,113.7,8.0,9.4,115.3,8.0,70.4,109.5,64.2,26.8,119.3,22.4,26.8,119.3,22.4
+29,6/24/26,7:13:55 AM,182.2,23.6,11.8,21.4,82.4,150.2,50.8,92.6,5.9,10.8,17.7,32.2,64.7,117.8,160.8,8.5,2,1945,46,0.76,169.6,Estándar,Musculoso,0.8,52.7,1.6,0.8,48.7,1.6,12.4,114.5,10.8,3.8,88.6,4.2,3.8,88.6,4.2,9.2,113.4,8.0,9.4,115.3,8.0,70.2,109.5,64.2,26.8,119.4,22.4,26.8,119.4,22.4
+30,6/23/26,6:48:28 AM,184.4,23.9,12.1,22.4,82.0,151.2,50.6,93.2,5.9,10.8,17.6,32.4,64.4,118.6,162.0,8.7,2,1957,46,0.75,169.6,Estándar,Musculoso,1.0,58.1,1.6,0.8,52.7,1.6,13.0,119.4,10.8,4.0,91.7,4.2,4.0,92.2,4.2,9.2,114.1,8.2,9.4,115.8,8.2,70.8,109.8,64.6,27.0,119.9,22.6,27.0,119.9,22.6
+31,6/22/26,8:37:34 AM,187.0,24.3,13.3,24.8,81.0,151.4,50.0,93.4,5.8,10.8,17.4,32.6,63.6,118.8,162.0,9.5,3,1959,46,0.74,169.6,Estándar,Musculoso,1.2,70.3,1.6,1.0,66.2,1.6,14.2,131.6,10.8,4.2,100.5,4.2,4.2,101.0,4.2,9.2,113.5,8.2,9.4,114.9,8.2,71.0,109.2,65.0,27.0,119.3,22.6,27.0,119.4,22.6</script>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------------------
+   CSV parsing
+--------------------------------------------------------------------------- */
+function parseCSV(text) {
+  const rows = [];
+  let field = "", row = [], inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field); field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); field = "";
+      if (row.length > 1 || row[0].trim() !== "") rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field.length || row.length) { row.push(field); if (row.some(v => v.trim() !== "")) rows.push(row); }
+  return rows;
+}
+
+// RENPHO date is M/D/YY (e.g. 7/23/26) with a separate time column.
+function parseDate(fecha, hora) {
+  if (!fecha) return null;
+  const m = fecha.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) { const d = new Date(fecha); return isNaN(d) ? null : d; }
+  let [, mo, da, yr] = m;
+  yr = parseInt(yr, 10);
+  if (yr < 100) yr += (yr < 70 ? 2000 : 1900);
+  let hh = 0, mm = 0, ss = 0;
+  if (hora) {
+    const t = hora.trim().match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?/);
+    if (t) {
+      hh = parseInt(t[1], 10); mm = parseInt(t[2], 10); ss = t[3] ? parseInt(t[3], 10) : 0;
+      const ap = t[4] ? t[4].toLowerCase() : null;
+      if (ap === "pm" && hh < 12) hh += 12;
+      if (ap === "am" && hh === 12) hh = 0;
+    }
+  }
+  return new Date(yr, parseInt(mo, 10) - 1, parseInt(da, 10), hh, mm, ss);
+}
+
+/* ---------------------------------------------------------------------------
+   Dataset model
+--------------------------------------------------------------------------- */
+const EXCLUDE = new Set(["No.", "Fecha", "Hora"]);
+
+function buildDataset(text) {
+  const rows = parseCSV(text);
+  if (rows.length < 2) throw new Error("CSV has no data rows.");
+  const headers = rows[0].map(h => h.trim());
+  const fechaIdx = headers.findIndex(h => /^fecha$/i.test(h));
+  const horaIdx = headers.findIndex(h => /^hora$/i.test(h));
+
+  const records = [];
+  for (let r = 1; r < rows.length; r++) {
+    const raw = rows[r];
+    if (raw.every(v => v.trim() === "")) continue;
+    const date = parseDate(raw[fechaIdx], horaIdx >= 0 ? raw[horaIdx] : null);
+    if (!date || isNaN(date)) continue;
+    const rec = { date, t: date.getTime(), values: {} };
+    headers.forEach((h, i) => { rec.values[h] = raw[i] !== undefined ? raw[i].trim() : ""; });
+    records.push(rec);
+  }
+  records.sort((a, b) => a.t - b.t);
+
+  // A column is a plottable metric if most of its non-empty values are numeric.
+  const metrics = [];
+  headers.forEach(h => {
+    if (EXCLUDE.has(h)) return;
+    let numeric = 0, total = 0;
+    for (const rec of records) {
+      const v = rec.values[h];
+      if (v === "" || v == null) continue;
+      total++;
+      if (!isNaN(parseFloat(v)) && isFinite(v.replace(/,/g, ""))) numeric++;
+    }
+    if (total > 0 && numeric / total >= 0.6) metrics.push(h);
+  });
+
+  const series = {};
+  for (const h of metrics) {
+    series[h] = records
+      .map(rec => ({ t: rec.t, y: rec.values[h] === "" ? null : parseFloat(rec.values[h]) }))
+      .filter(p => p.y != null && isFinite(p.y));
+  }
+
+  return {
+    records, metrics, series,
+    minT: records.length ? records[0].t : null,
+    maxT: records.length ? records[records.length - 1].t : null,
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Time-window logic (Week / Month / All)
+--------------------------------------------------------------------------- */
+const DAY = 86400000;
+
+function startOfDay(ms) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function startOfWeek(ms) { // Monday-aligned
+  const d = new Date(startOfDay(ms));
+  const dow = (d.getDay() + 6) % 7; // 0 = Monday
+  return d.getTime() - dow * DAY;
+}
+function startOfMonth(ms) { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), 1).getTime(); }
+function addMonths(ms, n) { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth() + n, 1).getTime(); }
+
+function computeWindow(state, ds) {
+  if (state.mode === "all") {
+    if (ds.minT == null) return { start: 0, end: DAY };
+    const pad = Math.max((ds.maxT - ds.minT) * 0.02, DAY / 2);
+    return { start: ds.minT - pad, end: ds.maxT + pad };
+  }
+  if (state.mode === "week") {
+    const start = startOfWeek(state.anchor);
+    return { start, end: start + 7 * DAY };
+  }
+  // month
+  const start = startOfMonth(state.anchor);
+  return { start, end: addMonths(start, 1) };
+}
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtDay(ms) { const d = new Date(ms); return MONTHS[d.getMonth()] + " " + d.getDate(); }
+function fmtDayYear(ms) { const d = new Date(ms); return fmtDay(ms) + ", " + d.getFullYear(); }
+
+function windowLabel(state, ds) {
+  const w = computeWindow(state, ds);
+  if (state.mode === "all") {
+    if (ds.minT == null) return "No data";
+    return fmtDayYear(ds.minT) + "  —  " + fmtDayYear(ds.maxT);
+  }
+  if (state.mode === "week") {
+    return fmtDay(w.start) + " – " + fmtDay(w.end - DAY) + ", " + new Date(w.start).getFullYear();
+  }
+  const d = new Date(w.start);
+  return MONTHS[d.getMonth()] + " " + d.getFullYear();
+}
+
+/* ---------------------------------------------------------------------------
+   Linear regression (least squares over visible points)
+--------------------------------------------------------------------------- */
+function linreg(points) {
+  const n = points.length;
+  if (n < 2) return null;
+  // Use days-from-first as x to keep numbers well-scaled.
+  const x0 = points[0].t;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const p of points) {
+    const x = (p.t - x0) / DAY;
+    sx += x; sy += p.y; sxx += x * x; sxy += x * p.y;
+  }
+  const denom = n * sxx - sx * sx;
+  if (denom === 0) return null;
+  const slope = (n * sxy - sx * sy) / denom;
+  const intercept = (sy - slope * sx) / n;
+  return { x0, slope, intercept, at: t => intercept + slope * ((t - x0) / DAY) };
+}
+
+/* ---------------------------------------------------------------------------
+   Canvas chart
+--------------------------------------------------------------------------- */
+function niceTicks(min, max, count) {
+  const span = max - min || 1;
+  const raw = span / Math.max(1, count);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  let step;
+  if (norm < 1.5) step = 1; else if (norm < 3) step = 2; else if (norm < 7) step = 5; else step = 10;
+  step *= mag;
+  const start = Math.ceil(min / step) * step;
+  const ticks = [];
+  for (let v = start; v <= max + step * 0.001; v += step) ticks.push(v);
+  return ticks;
+}
+
+function timeTicks(start, end, targetCount) {
+  const span = end - start;
+  const ticks = [];
+  if (span <= 9 * DAY) {
+    for (let t = startOfDay(start); t <= end; t += DAY) if (t >= start) ticks.push(t);
+  } else if (span <= 70 * DAY) {
+    const step = Math.max(1, Math.round(span / DAY / targetCount)) * DAY;
+    for (let t = startOfDay(start); t <= end; t += step) if (t >= start) ticks.push(t);
+  } else {
+    let t = startOfMonth(start);
+    if (t < start) t = addMonths(t, 1);
+    const monthSpan = (new Date(end).getFullYear() - new Date(start).getFullYear()) * 12
+                    + (new Date(end).getMonth() - new Date(start).getMonth());
+    const step = Math.max(1, Math.round(monthSpan / targetCount));
+    while (t <= end) { ticks.push(t); t = addMonths(t, step); }
+  }
+  return ticks;
+}
+
+function fmtTick(ms, span) {
+  const d = new Date(ms);
+  if (span > 70 * DAY) return MONTHS[d.getMonth()] + " '" + String(d.getFullYear()).slice(-2);
+  return (d.getMonth() + 1) + "/" + d.getDate();
+}
+
+function fmtNum(v) {
+  if (v == null) return "–";
+  const a = Math.abs(v);
+  if (a !== 0 && a < 1) return v.toFixed(2);
+  if (a < 100) return (Math.round(v * 10) / 10).toString();
+  return Math.round(v).toString();
+}
+
+class Chart {
+  constructor(canvas, tooltip) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.tooltip = tooltip;
+    this.points = [];       // visible points {t,y,px,py}
+    this.hover = -1;
+    canvas.addEventListener("mousemove", e => this.onMove(e));
+    canvas.addEventListener("mouseleave", () => { this.hover = -1; this.hideTip(); this.draw(); });
+  }
+
+  setData(allPoints, window, showReg) {
+    this.all = allPoints;
+    this.window = window;
+    this.showReg = showReg;
+  }
+
+  hideTip() { if (this.tooltip) this.tooltip.style.opacity = 0; }
+
+  onMove(e) {
+    if (!this.points.length) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    let best = -1, bestDist = 26;
+    for (let i = 0; i < this.points.length; i++) {
+      const d = Math.abs(this.points[i].px - mx);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    if (best !== this.hover) { this.hover = best; this.draw(); }
+    if (best >= 0 && this.tooltip) {
+      const p = this.points[best];
+      this.tooltip.innerHTML = '<span class="tt-val">' + fmtNum(p.y) + '</span> &middot; ' +
+                               '<span class="tt-date">' + fmtDayYear(p.t) + '</span>';
+      this.tooltip.style.left = p.px + "px";
+      this.tooltip.style.top = p.py + "px";
+      this.tooltip.style.opacity = 1;
+    } else this.hideTip();
+  }
+
+  draw() {
+    const ctx = this.ctx, cv = this.canvas;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = cv.clientWidth, cssH = cv.clientHeight;
+    if (cv.width !== Math.round(cssW * dpr) || cv.height !== Math.round(cssH * dpr)) {
+      cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const padL = 44, padR = 12, padT = 10, padB = 24;
+    const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
+    const { start, end } = this.window;
+
+    const vis = this.all.filter(p => p.t >= start && p.t <= end);
+    this.points = [];
+
+    // styles
+    const css = getComputedStyle(document.documentElement);
+    const gridColor = css.getPropertyValue("--grid").trim() || "#262b38";
+    const mutedColor = css.getPropertyValue("--muted").trim() || "#98a0b3";
+    const accent = css.getPropertyValue("--accent").trim() || "#4f9cf9";
+    const accent2 = css.getPropertyValue("--accent-2").trim() || "#f7b955";
+
+    if (!vis.length) {
+      ctx.fillStyle = mutedColor;
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("No data in this period", cssW / 2, cssH / 2);
+      return;
+    }
+
+    // Y range
+    let yMin = Infinity, yMax = -Infinity;
+    for (const p of vis) { if (p.y < yMin) yMin = p.y; if (p.y > yMax) yMax = p.y; }
+    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+    const yPad = (yMax - yMin) * 0.12;
+    yMin -= yPad; yMax += yPad;
+
+    const xToPx = t => padL + ((t - start) / (end - start)) * plotW;
+    const yToPx = y => padT + (1 - (y - yMin) / (yMax - yMin)) * plotH;
+
+    // Y grid + labels
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.font = "10px sans-serif";
+    for (const yt of niceTicks(yMin, yMax, 4)) {
+      const py = yToPx(yt);
+      if (py < padT - 1 || py > padT + plotH + 1) continue;
+      ctx.strokeStyle = gridColor; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(padL, py); ctx.lineTo(padL + plotW, py); ctx.stroke();
+      ctx.fillStyle = mutedColor;
+      ctx.fillText(fmtNum(yt), padL - 6, py);
+    }
+
+    // X ticks + labels
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    const span = end - start;
+    for (const xt of timeTicks(start, end, 6)) {
+      const px = xToPx(xt);
+      if (px < padL - 1 || px > padL + plotW + 1) continue;
+      ctx.strokeStyle = gridColor; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px, padT); ctx.lineTo(px, padT + plotH); ctx.stroke();
+      ctx.fillStyle = mutedColor;
+      ctx.fillText(fmtTick(xt, span), px, padT + plotH + 5);
+    }
+
+    // Regression line (over visible points)
+    if (this.showReg) {
+      const reg = linreg(vis);
+      if (reg) {
+        const y1 = reg.at(start), y2 = reg.at(end);
+        ctx.strokeStyle = accent2; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(xToPx(start), yToPx(y1));
+        ctx.lineTo(xToPx(end), yToPx(y2));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Data line
+    ctx.strokeStyle = accent; ctx.lineWidth = 2;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.beginPath();
+    vis.forEach((p, i) => {
+      const px = xToPx(p.t), py = yToPx(p.y);
+      this.points.push({ t: p.t, y: p.y, px, py });
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+
+    // Points
+    for (let i = 0; i < this.points.length; i++) {
+      const p = this.points[i];
+      const isHover = i === this.hover;
+      ctx.fillStyle = isHover ? "#fff" : accent;
+      ctx.beginPath();
+      ctx.arc(p.px, p.py, isHover ? 4 : (this.points.length > 40 ? 1.5 : 2.6), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (this.hover >= 0) {
+      const p = this.points[this.hover];
+      ctx.strokeStyle = gridColor; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(p.px, padT); ctx.lineTo(p.px, padT + plotH); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   App
+--------------------------------------------------------------------------- */
+const state = { mode: "all", anchor: Date.now(), regAll: true, filter: "" };
+let dataset = null;
+const charts = []; // {metric, chart, card, regEnabled}
+
+const grid = document.getElementById("grid");
+const rangeLabel = document.getElementById("range-label");
+const datasetInfo = document.getElementById("dataset-info");
+
+function initFromDataset() {
+  grid.innerHTML = "";
+  charts.length = 0;
+  if (!dataset || !dataset.metrics.length) {
+    grid.innerHTML = '<div class="empty-note">No numeric metrics found in this CSV.</div>';
+    datasetInfo.textContent = "";
+    return;
+  }
+  state.anchor = dataset.maxT || Date.now();
+
+  for (const metric of dataset.metrics) {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const head = document.createElement("div");
+    head.className = "card-head";
+    const left = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = metric;
+    const stats = document.createElement("div");
+    stats.className = "card-stats";
+    left.appendChild(title); left.appendChild(stats);
+
+    const reg = document.createElement("label");
+    reg.className = "chk";
+    const regBox = document.createElement("input");
+    regBox.type = "checkbox";
+    reg.appendChild(regBox);
+    reg.appendChild(document.createTextNode("Trend"));
+
+    head.appendChild(left);
+    head.appendChild(reg);
+
+    const wrap = document.createElement("div");
+    wrap.className = "canvas-wrap";
+    const canvas = document.createElement("canvas");
+    const tip = document.createElement("div");
+    tip.className = "tooltip";
+    wrap.appendChild(canvas);
+    wrap.appendChild(tip);
+
+    card.appendChild(head);
+    card.appendChild(wrap);
+    grid.appendChild(card);
+
+    const entry = { metric, card, statsEl: stats, chart: new Chart(canvas, tip), regEnabled: state.regAll, regBox };
+    regBox.checked = state.regAll;
+    regBox.addEventListener("change", () => { entry.regEnabled = regBox.checked; renderChart(entry); });
+    charts.push(entry);
+  }
+
+  datasetInfo.textContent = dataset.records.length + " records · " +
+    dataset.metrics.length + " metrics · " +
+    (dataset.minT ? fmtDayYear(dataset.minT) + " – " + fmtDayYear(dataset.maxT) : "");
+
+  applyFilter();
+  renderAll();
+}
+
+// Metrics where an INCREASE is a good thing (green on increase, red on decrease).
+// Matched as accent-insensitive substrings against the column name.
+const HIGHER_IS_BETTER = [
+  "porcentaje de musculo",            // muscle % (also matches skeletal-muscle %)
+  "masa muscular",                    // muscle mass (also matches skeletal-muscle mass)
+  "musculo",                          // any muscle metric, incl. segmental "Músculo <segment>"
+  "porcentaje oseo",                  // bone %
+  "masa osea",                        // bone mass
+  "porcentaje de proteina",           // protein %
+  "masa proteica",                    // protein mass
+  "agua corporal",                    // body water (% and mass)
+  "peso corporal sin grasa",          // fat-free body weight
+  "tasa metabolica",                  // basal metabolic rate
+];
+function normalize(s) {
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+function higherIsBetter(metric) {
+  const n = normalize(metric);
+  return HIGHER_IS_BETTER.some(k => n.includes(k));
+}
+
+function periodStats(points, window, metric) {
+  const vis = points.filter(p => p.t >= window.start && p.t <= window.end);
+  if (!vis.length) return "no data in period";
+  const first = vis[0].y, last = vis[vis.length - 1].y;
+  const delta = last - first;
+  const sign = delta > 0 ? "▲" : (delta < 0 ? "▼" : "•");
+  // Color by whether the change is good, not merely by direction.
+  const goodOnIncrease = higherIsBetter(metric);
+  let cls = "";
+  if (delta !== 0) cls = ((delta > 0) === goodOnIncrease) ? "good" : "bad";
+  const deltaTxt = (delta >= 0 ? "+" : "") + fmtNum(delta);
+  return 'Δ <span class="delta ' + cls + '">' + sign + ' ' + deltaTxt + '</span> · ' +
+         fmtNum(first) + ' → ' + fmtNum(last) + ' · ' +
+         vis.length + ' pts';
+}
+
+function renderChart(entry) {
+  const w = computeWindow(state, dataset);
+  const pts = dataset.series[entry.metric] || [];
+  entry.chart.setData(pts, w, entry.regEnabled);
+  entry.chart.draw();
+  entry.statsEl.innerHTML = periodStats(pts, w, entry.metric);
+}
+
+function renderAll() {
+  rangeLabel.textContent = windowLabel(state, dataset);
+  document.getElementById("prev").disabled = state.mode === "all";
+  document.getElementById("next").disabled = state.mode === "all";
+  document.getElementById("latest").disabled = state.mode === "all";
+  for (const e of charts) if (e.card.style.display !== "none") renderChart(e);
+}
+
+function applyFilter() {
+  const q = state.filter.toLowerCase();
+  for (const e of charts) {
+    e.card.style.display = (!q || e.metric.toLowerCase().includes(q)) ? "" : "none";
+  }
+}
+
+function navigate(dir) {
+  if (state.mode === "week") state.anchor = startOfWeek(state.anchor) + dir * 7 * DAY;
+  else if (state.mode === "month") state.anchor = addMonths(startOfMonth(state.anchor), dir);
+  renderAll();
+}
+
+/* ---- Control wiring ---- */
+document.querySelectorAll("#mode-seg button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    state.mode = btn.dataset.mode;
+    document.querySelectorAll("#mode-seg button").forEach(b => b.classList.toggle("active", b === btn));
+    renderAll();
+  });
+});
+document.getElementById("prev").addEventListener("click", () => navigate(-1));
+document.getElementById("next").addEventListener("click", () => navigate(1));
+document.getElementById("latest").addEventListener("click", () => { state.anchor = dataset.maxT || Date.now(); renderAll(); });
+document.getElementById("reg-all").addEventListener("change", e => {
+  state.regAll = e.target.checked;
+  for (const entry of charts) { entry.regEnabled = state.regAll; entry.regBox.checked = state.regAll; }
+  renderAll();
+});
+document.getElementById("search").addEventListener("input", e => {
+  state.filter = e.target.value; applyFilter(); renderAll();
+});
+document.getElementById("file").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try { dataset = buildDataset(reader.result); initFromDataset(); }
+    catch (err) { alert("Could not parse CSV: " + err.message); }
+  };
+  reader.readAsText(f);
+});
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderAll, 120);
+});
+
+/* ---- Boot ---- */
+document.querySelector('#mode-seg button[data-mode="all"]').classList.add("active");
+try {
+  const embedded = document.getElementById("embedded-csv").textContent;
+  if (embedded && embedded.trim() && !embedded.includes("__CSV" + "_DATA__")) {
+    dataset = buildDataset(embedded);
+    initFromDataset();
+  } else {
+    grid.innerHTML = '<div class="empty-note">No embedded data. Use “Load CSV…” to open a RENPHO export.</div>';
+  }
+} catch (err) {
+  grid.innerHTML = '<div class="empty-note">Failed to load embedded data: ' + err.message + '</div>';
+}
+document.getElementById("footer").textContent =
+  "Tip: toggle “Trend” on any chart for a least-squares regression over the visible period. Switch Week/Month/All and use ‹ › to navigate.";
+</script>
+</body>
+</html>
