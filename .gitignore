@@ -1,0 +1,16 @@
+# This repo is PUBLIC (GitHub Pages), but most of what's in this folder is
+# personal health data. Deny by default and allow only what's meant to be
+# published, so an accidental `git add -A` can't leak measurements.
+#
+# Ignored on purpose: RENPHO *.csv (raw measurements), reports/ (report PDFs),
+# segmental_data.jsonl (extracted values), _work/ (logs + CSV backups).
+*
+
+# The published dashboard — data is embedded in it deliberately.
+!dashboard.html
+!.gitignore
+
+# To publish something else (e.g. the source or README), un-ignore it here
+# explicitly, e.g.:
+#   !process_pdfs.py
+#   !README.md
