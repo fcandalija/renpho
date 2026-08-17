@@ -65,12 +65,25 @@
     background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
     border-radius: 8px; padding: 6px 10px; font-size: 13px; width: 180px;
   }
-  #grid {
+  .section { padding: 20px 20px 0; }
+  .section:last-of-type { padding-bottom: 4px; }
+  .section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .section-head h2 {
+    font-size: 12px; margin: 0; font-weight: 650;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  }
+  .section-head .count { font-size: 12px; color: var(--muted); }
+  .section-head .spacer { flex: 1; }
+  .section-head button { padding: 4px 10px; font-size: 12px; }
+  .chart-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
     gap: 16px;
-    padding: 20px;
   }
+  /* Pinned charts get a bit more room than the full catalogue below. */
+  #pinned-grid { grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); }
+  #pinned-grid .canvas-wrap { height: 250px; }
+  #pinned-grid .card { border-color: #38445f; }
   .card {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -79,6 +92,13 @@
     display: flex; flex-direction: column;
   }
   .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .card-tools { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .pin-btn {
+    background: none; border: none; padding: 2px 5px; border-radius: 6px;
+    font-size: 15px; line-height: 1; color: var(--muted);
+  }
+  .pin-btn:hover { background: var(--panel-2); color: var(--text); }
+  .pin-btn.on { color: var(--accent-2); }
   .card-title { font-size: 14px; font-weight: 600; }
   .card-stats { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .card-stats .delta.bad { color: #ff6b6b; }
@@ -127,7 +147,24 @@
   </div>
 </header>
 
-<div id="grid"></div>
+<section class="section" id="pinned-section">
+  <div class="section-head">
+    <h2>Pinned</h2>
+    <span class="count" id="pinned-count"></span>
+    <span class="spacer"></span>
+    <button id="unpin-all" title="Remove every chart from the pinned section">Clear pinned</button>
+  </div>
+  <div class="chart-grid" id="pinned-grid"></div>
+  <div class="empty-note" id="pinned-empty">No pinned charts. Click ☆ on any chart below to pin it here.</div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>All metrics</h2>
+    <span class="count" id="all-count"></span>
+  </div>
+  <div class="chart-grid" id="grid"></div>
+</section>
 <div class="footer" id="footer"></div>
 
 <!-- Embedded RENPHO CSV. Replaced by a picked file at runtime if the user loads one. -->
@@ -552,22 +589,59 @@ class Chart {
 }
 
 /* ---------------------------------------------------------------------------
+   Pinned-chart selection (persisted in localStorage)
+--------------------------------------------------------------------------- */
+const PINNED_KEY = "renpho.dashboard.pinned.v1";
+
+// Stored as an array of metric names; array order is the display order in the
+// pinned section. Names not present in the current CSV are kept as-is so that
+// loading a different export doesn't silently drop someone's selection.
+function loadPinned() {
+  try {
+    const raw = localStorage.getItem(PINNED_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? [...new Set(arr.filter(m => typeof m === "string"))] : [];
+  } catch (err) { return []; }
+}
+function savePinned(list) {
+  try { localStorage.setItem(PINNED_KEY, JSON.stringify(list)); }
+  catch (err) { /* private mode / quota — selection just won't persist */ }
+}
+
+/* ---------------------------------------------------------------------------
    App
 --------------------------------------------------------------------------- */
-const state = { mode: "all", anchor: Date.now(), regAll: true, filter: "" };
+const state = { mode: "all", anchor: Date.now(), regAll: true, filter: "", pinned: loadPinned() };
 let dataset = null;
-const charts = []; // {metric, chart, card, regEnabled}
+const charts = []; // {metric, chart, card, regEnabled, pinBtn}
 
 const grid = document.getElementById("grid");
+const pinnedGrid = document.getElementById("pinned-grid");
+const pinnedEmpty = document.getElementById("pinned-empty");
+const pinnedCount = document.getElementById("pinned-count");
+const allCount = document.getElementById("all-count");
 const rangeLabel = document.getElementById("range-label");
 const datasetInfo = document.getElementById("dataset-info");
 
+function isPinned(metric) { return state.pinned.indexOf(metric) !== -1; }
+
+function togglePin(metric) {
+  const i = state.pinned.indexOf(metric);
+  if (i === -1) state.pinned.push(metric); else state.pinned.splice(i, 1);
+  savePinned(state.pinned);
+  layout();
+  renderAll();
+}
+
 function initFromDataset() {
   grid.innerHTML = "";
+  pinnedGrid.innerHTML = "";
   charts.length = 0;
   if (!dataset || !dataset.metrics.length) {
     grid.innerHTML = '<div class="empty-note">No numeric metrics found in this CSV.</div>';
     datasetInfo.textContent = "";
+    layout();
     return;
   }
   state.anchor = dataset.maxT || Date.now();
@@ -593,8 +667,17 @@ function initFromDataset() {
     reg.appendChild(regBox);
     reg.appendChild(document.createTextNode("Trend"));
 
+    const pinBtn = document.createElement("button");
+    pinBtn.className = "pin-btn";
+    pinBtn.addEventListener("click", () => togglePin(metric));
+
+    const tools = document.createElement("div");
+    tools.className = "card-tools";
+    tools.appendChild(reg);
+    tools.appendChild(pinBtn);
+
     head.appendChild(left);
-    head.appendChild(reg);
+    head.appendChild(tools);
 
     const wrap = document.createElement("div");
     wrap.className = "canvas-wrap";
@@ -608,7 +691,7 @@ function initFromDataset() {
     card.appendChild(wrap);
     grid.appendChild(card);
 
-    const entry = { metric, card, statsEl: stats, chart: new Chart(canvas, tip), regEnabled: state.regAll, regBox };
+    const entry = { metric, card, statsEl: stats, chart: new Chart(canvas, tip), regEnabled: state.regAll, regBox, pinBtn };
     regBox.checked = state.regAll;
     regBox.addEventListener("change", () => { entry.regEnabled = regBox.checked; renderChart(entry); });
     charts.push(entry);
@@ -618,7 +701,7 @@ function initFromDataset() {
     dataset.metrics.length + " metrics · " +
     (dataset.minT ? fmtDayYear(dataset.minT) + " – " + fmtDayYear(dataset.maxT) : "");
 
-  applyFilter();
+  layout();
   renderAll();
 }
 
@@ -676,11 +759,46 @@ function renderAll() {
   for (const e of charts) if (e.card.style.display !== "none") renderChart(e);
 }
 
-function applyFilter() {
-  const q = state.filter.toLowerCase();
-  for (const e of charts) {
-    e.card.style.display = (!q || e.metric.toLowerCase().includes(q)) ? "" : "none";
+/* Puts every card in the right section and applies the text filter.
+   A pinned chart lives only in the top section; the filter deliberately
+   applies to the “All metrics” catalogue only, so filtering never hides
+   the charts you chose to pin. */
+function layout() {
+  // Accent-insensitive: "musculo" has to match "Músculo …" columns.
+  const q = normalize(state.filter.trim());
+  const byMetric = new Map(charts.map(e => [e.metric, e]));
+
+  // Pinned section, in stored order.
+  let pinnedShown = 0;
+  for (const metric of state.pinned) {
+    const e = byMetric.get(metric);
+    if (!e) continue; // pinned in another dataset; keep the preference, skip it here
+    e.card.style.display = "";
+    pinnedGrid.appendChild(e.card);
+    pinnedShown++;
   }
+
+  // Everything else, in dataset order.
+  let allShown = 0;
+  for (const e of charts) {
+    e.pinBtn.classList.toggle("on", isPinned(e.metric));
+    e.pinBtn.textContent = isPinned(e.metric) ? "★" : "☆";
+    e.pinBtn.title = isPinned(e.metric) ? "Unpin from the top section" : "Pin to the top section";
+    if (isPinned(e.metric)) continue;
+    grid.appendChild(e.card); // re-appending keeps dataset order after an unpin
+    const show = !q || normalize(e.metric).includes(q);
+    e.card.style.display = show ? "" : "none";
+    if (show) allShown++;
+  }
+
+  pinnedEmpty.style.display = pinnedShown ? "none" : "";
+  pinnedGrid.style.display = pinnedShown ? "" : "none";
+  pinnedCount.textContent = pinnedShown ? pinnedShown + (pinnedShown === 1 ? " chart" : " charts") : "";
+  document.getElementById("unpin-all").disabled = pinnedShown === 0;
+  const total = charts.length - pinnedShown;
+  allCount.textContent = charts.length
+    ? (q ? allShown + " of " + total + " shown" : total + (total === 1 ? " chart" : " charts"))
+    : "";
 }
 
 function navigate(dir) {
@@ -706,7 +824,14 @@ document.getElementById("reg-all").addEventListener("change", e => {
   renderAll();
 });
 document.getElementById("search").addEventListener("input", e => {
-  state.filter = e.target.value; applyFilter(); renderAll();
+  state.filter = e.target.value; layout(); renderAll();
+});
+document.getElementById("unpin-all").addEventListener("click", () => {
+  if (!state.pinned.length) return;
+  state.pinned = [];
+  savePinned(state.pinned);
+  layout();
+  renderAll();
 });
 document.getElementById("file").addEventListener("change", e => {
   const f = e.target.files[0];
@@ -738,8 +863,11 @@ try {
 } catch (err) {
   grid.innerHTML = '<div class="empty-note">Failed to load embedded data: ' + err.message + '</div>';
 }
+layout();
 document.getElementById("footer").textContent =
-  "Tip: toggle “Trend” on any chart for a least-squares regression over the visible period. Switch Week/Month/All and use ‹ › to navigate.";
+  "Tip: click ☆ on a chart to pin it to the top section (saved in this browser). " +
+  "Toggle “Trend” for a least-squares regression over the visible period. " +
+  "Switch Week/Month/All and use ‹ › to navigate.";
 </script>
 </body>
 </html>
