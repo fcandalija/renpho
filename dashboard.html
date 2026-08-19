@@ -441,6 +441,15 @@ function fmtNum(v) {
   return Math.round(v).toString();
 }
 
+// Stat-line numbers always carry exactly one decimal, so deltas line up across
+// charts instead of collapsing to an integer when they land on a whole number.
+function fmtStat(v) {
+  if (v == null) return "–";
+  // Avoid "-0.0" for deltas that round away to nothing.
+  if (Math.abs(v) < 0.05) return "0.0";
+  return v.toFixed(1);
+}
+
 class Chart {
   constructor(canvas, tooltip) {
     this.canvas = canvas;
@@ -739,9 +748,9 @@ function periodStats(points, window, metric) {
   const goodOnIncrease = higherIsBetter(metric);
   let cls = "";
   if (delta !== 0) cls = ((delta > 0) === goodOnIncrease) ? "good" : "bad";
-  const deltaTxt = (delta >= 0 ? "+" : "") + fmtNum(delta);
+  const deltaTxt = (delta >= 0 ? "+" : "") + fmtStat(delta);
   return 'Δ <span class="delta ' + cls + '">' + sign + ' ' + deltaTxt + '</span> · ' +
-         fmtNum(first) + ' → ' + fmtNum(last) + ' · ' +
+         fmtStat(first) + ' → ' + fmtStat(last) + ' · ' +
          vis.length + ' pts';
 }
 
