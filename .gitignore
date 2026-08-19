@@ -10,7 +10,13 @@
 !dashboard.html
 !.gitignore
 
-# To publish something else (e.g. the source or README), un-ignore it here
-# explicitly, e.g.:
-#   !process_pdfs.py
+# The ingest pipeline itself. Published so the daemon machines can pull code
+# updates (`_sync_from_origin` fast-forwards before each build) instead of
+# needing the scripts copied over by hand. No credentials live in these — the
+# publish identity is a noreply address and git auth comes from the machine.
+!process_pdfs.py
+!pdfimg.py
+!ocr_segmental.py
+
+# To publish something else (e.g. the README) un-ignore it here explicitly, e.g.:
 #   !README.md
