@@ -434,21 +434,31 @@ function fmtTick(ms, span) {
   return (d.getMonth() + 1) + "/" + d.getDate();
 }
 
-function fmtNum(v) {
-  if (v == null) return "–";
-  const a = Math.abs(v);
-  if (a !== 0 && a < 1) return v.toFixed(2);
-  if (a < 100) return (Math.round(v * 10) / 10).toString();
-  return Math.round(v).toString();
-}
-
-// Stat-line numbers always carry exactly one decimal, so deltas line up across
-// charts instead of collapsing to an integer when they land on a whole number.
+// Measured values (tooltips, stat lines) always carry at least one decimal. The
+// scale reports masses in 0.2 lb steps, so rounding 185.8 to "186" — which is what
+// the old magnitude-based formatter did to anything over 100 — threw away a real
+// digit. Metrics that live below 1 (WHR) need two decimals to say anything at all.
 function fmtStat(v) {
   if (v == null) return "–";
-  // Avoid "-0.0" for deltas that round away to nothing.
-  if (Math.abs(v) < 0.05) return "0.0";
-  return v.toFixed(1);
+  const a = Math.abs(v);
+  const s = v.toFixed(a !== 0 && a < 1 ? 2 : 1);
+  // toFixed keeps the sign on a value that rounds away to nothing: "-0.0".
+  return /^-0\.0*$/.test(s) ? s.slice(1) : s;
+}
+
+// Axis labels take their precision from the tick spacing instead: just enough
+// decimals that no two gridlines print the same label. A weekly weight chart
+// steps by 0.5 lb and needs one; a BMR chart stepping by 100 kcal needs none; a
+// WHR chart over three points can step by 0.005 and need three.
+function fmtAxis(v, decimals) {
+  return v.toFixed(decimals);
+}
+
+function tickDecimals(ticks) {
+  for (let d = 0; d < 4; d++) {
+    if (new Set(ticks.map(t => t.toFixed(d))).size === ticks.length) return d;
+  }
+  return 4;
 }
 
 class Chart {
@@ -482,7 +492,7 @@ class Chart {
     if (best !== this.hover) { this.hover = best; this.draw(); }
     if (best >= 0 && this.tooltip) {
       const p = this.points[best];
-      this.tooltip.innerHTML = '<span class="tt-val">' + fmtNum(p.y) + '</span> &middot; ' +
+      this.tooltip.innerHTML = '<span class="tt-val">' + fmtStat(p.y) + '</span> &middot; ' +
                                '<span class="tt-date">' + fmtDayYear(p.t) + '</span>';
       this.tooltip.style.left = p.px + "px";
       this.tooltip.style.top = p.py + "px";
@@ -535,13 +545,15 @@ class Chart {
     // Y grid + labels
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
     ctx.font = "10px sans-serif";
-    for (const yt of niceTicks(yMin, yMax, 4)) {
+    const yTicks = niceTicks(yMin, yMax, 4);
+    const yDec = tickDecimals(yTicks);
+    for (const yt of yTicks) {
       const py = yToPx(yt);
       if (py < padT - 1 || py > padT + plotH + 1) continue;
       ctx.strokeStyle = gridColor; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(padL, py); ctx.lineTo(padL + plotW, py); ctx.stroke();
       ctx.fillStyle = mutedColor;
-      ctx.fillText(fmtNum(yt), padL - 6, py);
+      ctx.fillText(fmtAxis(yt, yDec), padL - 6, py);
     }
 
     // X ticks + labels
