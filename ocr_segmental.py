@@ -10,10 +10,14 @@ segment/value slot by position.
 Layout of the "sections" crop (BOTH_BOX, 2058 px wide):
   - x < half  -> "Análisis segmental de grasa" (fat);  x >= half -> "Balance muscular" (mus)
   - three row bands by y: arms (top), torso (middle), legs (bottom)
-  - within a segment the three numbers stack vertically -> [mass_lb, percent, standard_lb]
+  - within a segment the three numbers stack vertically -> [mass, percent, standard]
 
-Each number is a float with exactly one decimal (e.g. 0.8, 47.3, 110.0), which
-makes it trivial to separate real values from OCR noise ("lb", "%", "Estándar").
+The masses are in whichever unit the phone was set to when the report was made,
+and the report says which by printing it next to every mass ("0.39 kg" where a
+pound report has "0.8 lb"). That also changes their precision — kg masses carry
+two decimals, lb masses one — while the percentages stay at one either way. So a
+value is a number with one or two decimals (e.g. 0.8, 47.3, 0.39, 32.09), which
+still separates real values from OCR noise ("kg", "lb", "%", "Estándar").
 
 Dependencies: the Python stdlib + pdfimg.py + the `tesseract` binary on PATH.
 """
@@ -32,7 +36,12 @@ LABEL_KEY = {
 }
 SEG_KEYS = ["al", "ar", "t", "ll", "lr"]
 
-NUM_RE   = re.compile(r"(?<!\d)\d{1,3}\.\d(?!\d)")   # a value: exactly one decimal digit
+NUM_RE   = re.compile(r"(?<!\d)\d{1,3}\.\d{1,2}(?!\d)")   # a value: one or two decimals
+# The unit printed beside every mass, as tesseract sees it. A lowercase L comes
+# back as "l", "I", "|" or "1" depending on the glyph's neighbours, so accept the
+# lot; "kg" reads cleanly.
+KG_RE    = re.compile(r"^kg$", re.IGNORECASE)
+LB_RE    = re.compile(r"^[lI|1]b$", re.IGNORECASE)
 MONTHS   = {m: i + 1 for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])}
@@ -104,8 +113,18 @@ def _nearest_label(tok, labels):
     return best
 
 
+def _read_unit(tokens):
+    """Which unit the masses are printed in. The report repeats it next to every
+    mass — ten per section — so a simple majority is robust to the odd misread.
+    Defaults to lb, which is what every report before the switch used."""
+    kg = sum(1 for t in tokens if KG_RE.match(t["text"]))
+    lb = sum(1 for t in tokens if LB_RE.match(t["text"]))
+    return ("kg" if kg > lb else "lb"), kg, lb
+
+
 def extract(pdf_path):
-    """Return (record_dict, warnings). record_dict has fat/mus -> key -> [m, pct, std]."""
+    """Return (record_dict, warnings). record_dict has fat/mus -> key -> [m, pct, std]
+    plus the unit those masses are in."""
     png = _write_crop(pdf_path, BOTH_BOX)
     try:
         tokens = _tsv(png)
@@ -136,7 +155,10 @@ def extract(pdf_path):
         groups[sect][lab["key"]].append((t["cy"], float(m.group())))
 
     warnings = []
-    record = {"fat": {}, "mus": {}}
+    unit, kg, lb = _read_unit(tokens)
+    if not kg and not lb:
+        warnings.append("no lb/kg token found next to the masses; assuming lb")
+    record = {"unit": unit, "fat": {}, "mus": {}}
     for sect in ("fat", "mus"):
         for k in SEG_KEYS:
             vals = [v for _, v in sorted(groups[sect][k])]  # top->bottom = mass,%,std
@@ -152,7 +174,7 @@ def extract_full(pdf_path):
     date, time = _parse_header(pdf_path)
     rec, warnings = extract(pdf_path)
     return {"src": os.path.basename(pdf_path), "date": date, "time": time,
-            "fat": rec["fat"], "mus": rec["mus"]}, warnings
+            "unit": rec["unit"], "fat": rec["fat"], "mus": rec["mus"]}, warnings
 
 
 if __name__ == "__main__":

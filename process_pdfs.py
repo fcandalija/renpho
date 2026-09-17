@@ -7,8 +7,9 @@ values must be read from the pixels. This script handles the whole loop:
   ingest Pull freshly exported files out of the inbox folders (an iCloud Drive
          folder, and ~/Downloads as a fallback) into place: new report PDFs are
          moved into reports/ (de-duplicated by content hash, renamed to the next
-         free number) and the newest RENPHO Health CSV replaces the main CSV
-         (old one backed up). Then runs `auto`. A launchd agent runs this
+         free number) and the newest RENPHO Health CSV is merged into the main
+         CSV (old one backed up), converting its mass columns if the export was
+         taken in the other unit. Then runs `auto`. A launchd agent runs this
          automatically whenever files land — see renpho-ingest.plist.
 
   auto   Find PDFs in reports/ not yet recorded, OCR their segmental numbers
@@ -52,6 +53,21 @@ COMBINED_CSV = os.path.join(HERE, "RENPHO Combined-Francisco.csv")
 DASHBOARD    = os.path.join(HERE, "dashboard.html")
 STAGING  = os.path.join(HERE, "_work", "staging")
 BACKUPS  = os.path.join(HERE, "_work", "backups")
+
+# --- mass units --------------------------------------------------------------
+# The app exports in whichever unit the phone is set to, and says so by renaming
+# every mass column: "Peso(kg)" where a pound export has "Peso(lb)". The %, kcal
+# and age columns are untouched. Merged as-is, a switched export would append a
+# second, parallel set of columns rather than extend the existing ones, and every
+# mass metric would end up as two half-length series — so incoming masses are
+# converted to one canonical unit on the way in.
+#
+# lb is canonical because both the existing history and the segmental columns
+# read off the report PDFs are lb. The dashboard converts for display and has its
+# own lb/kg toggle, so this choice isn't visible there.
+CANON_MASS_UNIT = "lb"
+LB_PER_KG = 2.20462262185
+MASS_UNIT_RE = re.compile(r"\((lb|kg)\)\s*$", re.IGNORECASE)
 
 
 # --- log timestamps ----------------------------------------------------------
@@ -162,9 +178,10 @@ def cmd_scan():
         print(f"  {name}")
         print(f"      date crop:     {hdr}")
         print(f"      sections crop: {both}")
-        # skeleton: fill date/time from the date crop, and each [mass, %, std].
+        # skeleton: fill date/time from the date crop, the unit printed beside
+        # the masses, and each [mass, %, std].
         skeletons.append({
-            "src": name, "date": "M/D/YY", "time": "H:MM:SS AM",
+            "src": name, "date": "M/D/YY", "time": "H:MM:SS AM", "unit": "lb",
             "fat": {k: [None, None, None] for k, _ in SEGMENTS},
             "mus": {k: [None, None, None] for k, _ in SEGMENTS},
         })
@@ -176,8 +193,10 @@ def cmd_scan():
     print(f"\nSkeleton written to {tmpl}")
     print("Segment keys: al=Brazo izquierdo, ar=Brazo derecho, t=Torso, "
           "ll=Pierna izquierda, lr=Pierna derecha")
-    print("Each value is [mass_lb, percent_vs_standard, standard_lb] "
+    print("Each value is [mass, percent_vs_standard, standard] "
           "(orange/blue diamond = mass, %; the third bullet = standard).")
+    print('Set "unit" to "lb" or "kg" to match what the report prints beside '
+          "each mass; the build converts.")
     print(f"Fill the values by reading the crops, then append the lines to {DATA} and run `build`.")
 
 
@@ -188,15 +207,18 @@ def norm_time(s):
 def record_warnings(rec):
     """Consistency check for a single record: flag any triple whose shown %
     disagrees with mass/std*100 (a likely OCR/transcription slip). Small masses
-    round hard, so only larger segments are checked, with a loose bound."""
+    round hard, so only larger segments are checked, with a loose bound. The
+    ratio is unit-free, but the cutoff isn't — take it to the record's unit so a
+    kg report is checked over the same segments a pound one would be."""
     out = []
+    floor = 5.0 if rec.get("unit", "lb") == "lb" else 5.0 / LB_PER_KG
     for grp in ("fat", "mus"):
         for key, label in SEGMENTS:
             m, pct, std = rec[grp][key]
             if None in (m, pct, std) or not std:
                 continue
             calc = m / std * 100
-            if abs(calc - pct) > 15 and m >= 5:
+            if abs(calc - pct) > 15 and m >= floor:
                 out.append(f"{grp} {label}: %={pct} but mass/std*100={calc:.1f}")
     return out
 
@@ -263,16 +285,84 @@ def _row_dt(d):
         return datetime.min
 
 
+def _convert_mass_columns(header, rows):
+    """Rewrite every mass column into CANON_MASS_UNIT. Returns (header, rows, n).
+
+    Values are written with two decimals — one more than the lb export itself
+    uses — so a kg reading survives the round trip back to kg in the dashboard
+    instead of drifting by a step of the scale's resolution."""
+    factors = {("kg", "lb"): LB_PER_KG, ("lb", "kg"): 1 / LB_PER_KG}
+    conv = {}
+    out_header = list(header)
+    for i, col in enumerate(header):
+        m = MASS_UNIT_RE.search(col)
+        if not m or m.group(1).lower() == CANON_MASS_UNIT:
+            continue
+        conv[i] = factors[(m.group(1).lower(), CANON_MASS_UNIT)]
+        out_header[i] = col[:m.start()] + f"({CANON_MASS_UNIT})"
+    if not conv:
+        return header, rows, 0
+
+    out_rows = []
+    for r in rows:
+        r = list(r)
+        for i, f in conv.items():
+            if i < len(r):
+                try:
+                    r[i] = f"{float(r[i].strip()) * f:.2f}"
+                except ValueError:
+                    pass                 # blank or non-numeric — leave it alone
+        out_rows.append(r)
+    return out_header, out_rows, len(conv)
+
+
+def _dedupe_columns(header, rows):
+    """Collapse columns that share a name, keeping each row's first non-empty
+    value. Converting units can make two columns the same one: a CSV merged
+    before conversion existed carries both Peso(lb) and Peso(kg), and the two
+    halves of that history belong in a single column."""
+    by_name, dupes = {}, False
+    for i, c in enumerate(header):
+        if c in by_name:
+            dupes = True
+            by_name[c].append(i)
+        else:
+            by_name[c] = [i]
+    if not dupes:
+        return header, rows, 0
+    cols = list(dict.fromkeys(header))
+    out_rows = [[next((r[i].strip() for i in by_name[c] if i < len(r) and r[i].strip()), "")
+                 for c in cols] for r in rows]
+    return cols, out_rows, len(header) - len(cols)
+
+
+def _normalize_units(header, rows, label):
+    """Put a Health table into canonical units, reporting what it had to change."""
+    header, rows, converted = _convert_mass_columns(header, rows)
+    header, rows, collapsed = _dedupe_columns(header, rows)
+    if converted:
+        print(f"  {label}: converted {converted} mass columns to {CANON_MASS_UNIT}")
+    if collapsed:
+        print(f"  {label}: merged {collapsed} duplicate columns left by an "
+              f"earlier mixed-unit merge")
+    return header, rows
+
+
 def _merge_health_csv(incoming_path):
     """Merge an incoming Health CSV into MAIN_CSV instead of replacing it, so a
     partial export (only new days) adds/refreshes rows rather than wiping history.
     Rows are keyed by (Fecha, Hora); incoming rows win on conflict. The result is
-    re-sorted newest-first and `No.` is renumbered. Returns (ok, added, updated)."""
+    re-sorted newest-first and `No.` is renumbered. Both sides are put into
+    canonical mass units first, so an export taken after the phone switched
+    between lb and kg extends the existing columns instead of adding its own.
+    Returns (ok, added, updated)."""
     ih, irows = _read_csv(incoming_path)
     if "Fecha" not in ih or "Hora" not in ih:
         return False, 0, 0
+    ih, irows = _normalize_units(ih, irows, os.path.basename(incoming_path))
     if os.path.exists(MAIN_CSV):
         mh, mrows = _read_csv(MAIN_CSV)
+        mh, mrows = _normalize_units(mh, mrows, os.path.basename(MAIN_CSV))
     else:
         mh, mrows = ih[:], []
 
@@ -561,6 +651,10 @@ def cmd_build():
     header = rows[0]
     i_no, i_fecha, i_hora = header.index("No."), header.index("Fecha"), header.index("Hora")
 
+    # Each record's masses are in whatever unit its report was printed in, which
+    # can differ row to row across a unit switch. A column can only hold one, so
+    # normalize per record to lb here and let _convert_mass_columns take the
+    # finished table to canonical units like any other export.
     def cols_for(prefix):
         out = []
         for _, label in SEGMENTS:
@@ -568,9 +662,8 @@ def cmd_build():
         return out
     out_header = ["No.", "Fecha", "Hora"] + cols_for("Grasa") + cols_for("Músculo")
 
-    def fmt(v):
-        return "" if v is None else f"{float(v):.1f}"
-
+    def fmt(v, decimals=1):
+        return "" if v is None else f"{float(v):.{decimals}f}"
     out_rows, matched, unmatched, warnings = [], 0, [], []
     for row in rows[1:]:
         date, time = row[i_fecha].strip(), norm_time(row[i_hora])
@@ -578,20 +671,33 @@ def cmd_build():
         line = [row[i_no].strip(), date, row[i_hora].strip()]
         if rec:
             matched += 1
+            # Records written before the app could export kg have no unit field.
+            in_kg = rec.get("unit", "lb") == "kg"
+            # Keep the extra digit a kg report carries, rather than rounding a
+            # converted 0.39 kg down to the 0.9 lb an lb report would have shown.
+            scale, dec = (LB_PER_KG, 2) if in_kg else (1.0, 1)
+
+            def mass(v):
+                return None if v is None else v * scale
+
             for grp in ("fat", "mus"):
                 for key, label in SEGMENTS:
                     m, pct, std = rec[grp][key]
-                    line += [fmt(m), fmt(pct), fmt(std)]
-                    # gross-error check (small masses round hard, so use a loose bound)
-                    if None not in (m, pct, std) and std:
-                        calc = m / std * 100
-                        if abs(calc - pct) > 15 and m >= 5:
+                    m_lb, std_lb = mass(m), mass(std)
+                    line += [fmt(m_lb, dec), fmt(pct), fmt(std_lb, dec)]
+                    # gross-error check (small masses round hard, so use a loose
+                    # bound). Checked in lb so the cutoff means the same thing
+                    # whichever unit the report was printed in.
+                    if None not in (m_lb, pct, std_lb) and std_lb:
+                        calc = m_lb / std_lb * 100
+                        if abs(calc - pct) > 15 and m_lb >= 5:
                             warnings.append(f"{date} {grp} {label}: %={pct} but mass/std*100={calc:.1f}")
         else:
             unmatched.append((row[i_no].strip(), date, time))
             line += [""] * (len(out_header) - 3)
         out_rows.append(line)
 
+    out_header, out_rows, _ = _convert_mass_columns(out_header, out_rows)
     with open(OUT_CSV, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(out_header)

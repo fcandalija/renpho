@@ -136,6 +136,13 @@
       <button id="latest" title="Jump to most recent period">Latest</button>
     </div>
     <div class="group">
+      <span class="label">Units</span>
+      <div class="seg" id="unit-seg">
+        <button data-unit="lb" title="Show masses in pounds">lb</button>
+        <button data-unit="kg" title="Show masses in kilograms">kg</button>
+      </div>
+    </div>
+    <div class="group">
       <label class="chk"><input type="checkbox" id="reg-all" checked /> Regression (all)</label>
     </div>
     <div class="group search">
@@ -292,6 +299,28 @@ function parseDate(fecha, hora) {
 }
 
 /* ---------------------------------------------------------------------------
+   Units
+
+   Mass columns carry their unit in the name — "Peso(lb)" in an export taken
+   with the phone set to pounds, "Peso(kg)" in a kilogram one — while the %,
+   kcal and age columns carry none. The unit belongs to the export, not to the
+   metric, so every series is stored internally in kg and converted at draw
+   time. Stripping the suffix also gives each metric a stable key: a pinned
+   chart survives both the toggle and loading an export in the other unit, and
+   a CSV that straddles a switch charts as one series instead of two halves.
+--------------------------------------------------------------------------- */
+const LB_PER_KG = 2.20462262185;
+const UNIT_RE = /\((lb|kg)\)\s*$/i;
+
+function splitUnit(header) {
+  const m = UNIT_RE.exec(header);
+  return m ? { key: header.slice(0, m.index).trim(), unit: m[1].toLowerCase() }
+           : { key: header, unit: null };
+}
+function toKg(v, unit) { return unit === "lb" ? v / LB_PER_KG : v; }
+function fromKg(v, unit) { return unit === "lb" ? v * LB_PER_KG : v; }
+
+/* ---------------------------------------------------------------------------
    Dataset model
 --------------------------------------------------------------------------- */
 const EXCLUDE = new Set(["No.", "Fecha", "Hora"]);
@@ -315,29 +344,48 @@ function buildDataset(text) {
   }
   records.sort((a, b) => a.t - b.t);
 
-  // A column is a plottable metric if most of its non-empty values are numeric.
-  const metrics = [];
+  // Group the columns into metrics, folding together any that differ only by
+  // unit suffix, then keep the ones that are mostly numeric — i.e. plottable.
+  const grouped = [];              // {key, isMass, cols: [{header, unit}]}
+  const byKey = new Map();
   headers.forEach(h => {
     if (EXCLUDE.has(h)) return;
-    let numeric = 0, total = 0;
-    for (const rec of records) {
-      const v = rec.values[h];
-      if (v === "" || v == null) continue;
-      total++;
-      if (!isNaN(parseFloat(v)) && isFinite(v.replace(/,/g, ""))) numeric++;
-    }
-    if (total > 0 && numeric / total >= 0.6) metrics.push(h);
+    const { key, unit } = splitUnit(h);
+    let g = byKey.get(key);
+    if (!g) { g = { key, isMass: false, cols: [] }; byKey.set(key, g); grouped.push(g); }
+    g.cols.push({ header: h, unit });
+    if (unit) g.isMass = true;
   });
 
-  const series = {};
-  for (const h of metrics) {
-    series[h] = records
-      .map(rec => ({ t: rec.t, y: rec.values[h] === "" ? null : parseFloat(rec.values[h]) }))
-      .filter(p => p.y != null && isFinite(p.y));
+  const metrics = [], series = {};
+  for (const g of grouped) {
+    const points = [];
+    let numeric = 0, total = 0;
+    for (const rec of records) {
+      // First column with a value wins: a row only ever carries one of the
+      // unit variants, so this picks whichever unit that row was exported in.
+      for (const c of g.cols) {
+        const v = rec.values[c.header];
+        if (v === "" || v == null) continue;
+        total++;
+        if (isNaN(parseFloat(v)) || !isFinite(v.replace(/,/g, ""))) continue;
+        numeric++;
+        points.push({ t: rec.t, y: toKg(parseFloat(v), c.unit) });
+        break;
+      }
+    }
+    if (total > 0 && numeric / total >= 0.6) { metrics.push(g); series[g.key] = points; }
+  }
+
+  // Default the toggle to whichever unit the export itself used.
+  let lbCols = 0, kgCols = 0;
+  for (const g of metrics) for (const c of g.cols) {
+    if (c.unit === "lb") lbCols++; else if (c.unit === "kg") kgCols++;
   }
 
   return {
     records, metrics, series,
+    nativeUnit: kgCols > lbCols ? "kg" : "lb",
     minT: records.length ? records[0].t : null,
     maxT: records.length ? records[records.length - 1].t : null,
   };
@@ -452,13 +500,15 @@ function fmtTick(ms, span) {
 }
 
 // Measured values (tooltips, stat lines) always carry at least one decimal. The
-// scale reports masses in 0.2 lb steps, so rounding 185.8 to "186" — which is what
-// the old magnitude-based formatter did to anything over 100 — threw away a real
-// digit. Metrics that live below 1 (WHR) need two decimals to say anything at all.
-function fmtStat(v) {
+// scale reports masses in 0.2 lb / 0.05 kg steps, so rounding 185.8 to "186" —
+// which is what the old magnitude-based formatter did to anything over 100 —
+// threw away a real digit, and kg needs a second digit to resolve a step at all.
+// Callers that know the unit pass `decimals`; the rest fall back to one decimal,
+// or two for metrics that live below 1 (WHR) and would otherwise say nothing.
+function fmtStat(v, decimals) {
   if (v == null) return "–";
   const a = Math.abs(v);
-  const s = v.toFixed(a !== 0 && a < 1 ? 2 : 1);
+  const s = v.toFixed(decimals != null ? decimals : (a !== 0 && a < 1 ? 2 : 1));
   // toFixed keeps the sign on a value that rounds away to nothing: "-0.0".
   return /^-0\.0*$/.test(s) ? s.slice(1) : s;
 }
@@ -489,10 +539,11 @@ class Chart {
     canvas.addEventListener("mouseleave", () => { this.hover = -1; this.hideTip(); this.draw(); });
   }
 
-  setData(allPoints, window, showReg) {
+  setData(allPoints, window, showReg, decimals) {
     this.all = allPoints;
     this.window = window;
     this.showReg = showReg;
+    this.decimals = decimals;
   }
 
   hideTip() { if (this.tooltip) this.tooltip.style.opacity = 0; }
@@ -509,7 +560,7 @@ class Chart {
     if (best !== this.hover) { this.hover = best; this.draw(); }
     if (best >= 0 && this.tooltip) {
       const p = this.points[best];
-      this.tooltip.innerHTML = '<span class="tt-val">' + fmtStat(p.y) + '</span> &middot; ' +
+      this.tooltip.innerHTML = '<span class="tt-val">' + fmtStat(p.y, this.decimals) + '</span> &middot; ' +
                                '<span class="tt-date">' + fmtDayYear(p.t) + '</span>';
       this.tooltip.style.left = p.px + "px";
       this.tooltip.style.top = p.py + "px";
@@ -630,19 +681,24 @@ class Chart {
 }
 
 /* ---------------------------------------------------------------------------
-   Pinned-chart selection (persisted in localStorage)
+   Persisted preferences (localStorage)
 --------------------------------------------------------------------------- */
 const PINNED_KEY = "renpho.dashboard.pinned.v1";
+const UNIT_KEY = "renpho.dashboard.unit.v1";
 
-// Stored as an array of metric names; array order is the display order in the
-// pinned section. Names not present in the current CSV are kept as-is so that
-// loading a different export doesn't silently drop someone's selection.
+// Pins are stored as an array of metric keys; array order is the display order
+// in the pinned section. Keys not present in the current CSV are kept as-is so
+// that loading a different export doesn't silently drop someone's selection.
+// Keys are unit-stripped, which also migrates pins saved as full column names
+// ("Peso(lb)") back when the unit was part of a metric's identity.
 function loadPinned() {
   try {
     const raw = localStorage.getItem(PINNED_KEY);
     if (!raw) return [];
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? [...new Set(arr.filter(m => typeof m === "string"))] : [];
+    return Array.isArray(arr)
+      ? [...new Set(arr.filter(m => typeof m === "string").map(m => splitUnit(m).key))]
+      : [];
   } catch (err) { return []; }
 }
 function savePinned(list) {
@@ -650,10 +706,26 @@ function savePinned(list) {
   catch (err) { /* private mode / quota — selection just won't persist */ }
 }
 
+// No stored unit means "follow the data", so the first load of a kg export
+// opens in kg. Touching the toggle pins the choice from then on.
+function loadUnit() {
+  try {
+    const u = localStorage.getItem(UNIT_KEY);
+    return u === "lb" || u === "kg" ? u : null;
+  } catch (err) { return null; }
+}
+function saveUnit(u) {
+  try { localStorage.setItem(UNIT_KEY, u); } catch (err) { /* see savePinned */ }
+}
+
 /* ---------------------------------------------------------------------------
    App
 --------------------------------------------------------------------------- */
-const state = { mode: "all", anchor: Date.now(), regAll: true, filter: "", pinned: loadPinned() };
+const storedUnit = loadUnit();
+const state = {
+  mode: "all", anchor: Date.now(), regAll: true, filter: "", pinned: loadPinned(),
+  unit: storedUnit || "lb", unitPinned: storedUnit != null,
+};
 let dataset = null;
 const charts = []; // {metric, chart, card, regEnabled, pinBtn}
 
@@ -665,11 +737,25 @@ const allCount = document.getElementById("all-count");
 const rangeLabel = document.getElementById("range-label");
 const datasetInfo = document.getElementById("dataset-info");
 
-function isPinned(metric) { return state.pinned.indexOf(metric) !== -1; }
+// A metric's name is unit-free; the displayed title puts the current unit back.
+function metricLabel(m) { return m.isMass ? m.key + "(" + state.unit + ")" : m.key; }
 
-function togglePin(metric) {
-  const i = state.pinned.indexOf(metric);
-  if (i === -1) state.pinned.push(metric); else state.pinned.splice(i, 1);
+// Display precision follows the scale's resolution in the chosen unit: it steps
+// by 0.2 lb but 0.05 kg, so kg needs the extra digit to show a single step.
+function massDecimals() { return state.unit === "kg" ? 2 : 1; }
+
+function setUnit(u, persist) {
+  state.unit = u;
+  if (persist) { state.unitPinned = true; saveUnit(u); }
+  document.querySelectorAll("#unit-seg button")
+    .forEach(b => b.classList.toggle("active", b.dataset.unit === u));
+}
+
+function isPinned(key) { return state.pinned.indexOf(key) !== -1; }
+
+function togglePin(key) {
+  const i = state.pinned.indexOf(key);
+  if (i === -1) state.pinned.push(key); else state.pinned.splice(i, 1);
   savePinned(state.pinned);
   layout();
   renderAll();
@@ -686,6 +772,7 @@ function initFromDataset() {
     return;
   }
   state.anchor = dataset.maxT || Date.now();
+  if (!state.unitPinned) setUnit(dataset.nativeUnit, false);
 
   for (const metric of dataset.metrics) {
     const card = document.createElement("div");
@@ -696,7 +783,7 @@ function initFromDataset() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "card-title";
-    title.textContent = metric;
+    title.textContent = metricLabel(metric);
     const stats = document.createElement("div");
     stats.className = "card-stats";
     left.appendChild(title); left.appendChild(stats);
@@ -710,7 +797,7 @@ function initFromDataset() {
 
     const pinBtn = document.createElement("button");
     pinBtn.className = "pin-btn";
-    pinBtn.addEventListener("click", () => togglePin(metric));
+    pinBtn.addEventListener("click", () => togglePin(metric.key));
 
     const tools = document.createElement("div");
     tools.className = "card-tools";
@@ -732,7 +819,8 @@ function initFromDataset() {
     card.appendChild(wrap);
     grid.appendChild(card);
 
-    const entry = { metric, card, statsEl: stats, chart: new Chart(canvas, tip), regEnabled: state.regAll, regBox, pinBtn };
+    const entry = { metric, card, titleEl: title, statsEl: stats, chart: new Chart(canvas, tip),
+                    regEnabled: state.regAll, regBox, pinBtn };
     regBox.checked = state.regAll;
     regBox.addEventListener("change", () => { entry.regEnabled = regBox.checked; renderChart(entry); });
     charts.push(entry);
@@ -768,28 +856,35 @@ function higherIsBetter(metric) {
   return HIGHER_IS_BETTER.some(k => n.includes(k));
 }
 
-function periodStats(points, window, metric) {
+function periodStats(points, window, metric, decimals) {
   const vis = points.filter(p => p.t >= window.start && p.t <= window.end);
   if (!vis.length) return "no data in period";
   const first = vis[0].y, last = vis[vis.length - 1].y;
   const delta = last - first;
   const sign = delta > 0 ? "▲" : (delta < 0 ? "▼" : "•");
   // Color by whether the change is good, not merely by direction.
-  const goodOnIncrease = higherIsBetter(metric);
+  const goodOnIncrease = higherIsBetter(metric.key);
   let cls = "";
   if (delta !== 0) cls = ((delta > 0) === goodOnIncrease) ? "good" : "bad";
-  const deltaTxt = (delta >= 0 ? "+" : "") + fmtStat(delta);
+  const deltaTxt = (delta >= 0 ? "+" : "") + fmtStat(delta, decimals);
   return 'Δ <span class="delta ' + cls + '">' + sign + ' ' + deltaTxt + '</span> · ' +
-         fmtStat(first) + ' → ' + fmtStat(last) + ' · ' +
+         fmtStat(first, decimals) + ' → ' + fmtStat(last, decimals) + ' · ' +
          vis.length + ' pts';
 }
 
 function renderChart(entry) {
   const w = computeWindow(state, dataset);
-  const pts = dataset.series[entry.metric] || [];
-  entry.chart.setData(pts, w, entry.regEnabled);
+  const m = entry.metric;
+  const stored = dataset.series[m.key] || [];
+  // Series are held in kg; only a mass metric shown in lb needs converting.
+  const pts = m.isMass && state.unit === "lb"
+    ? stored.map(p => ({ t: p.t, y: fromKg(p.y, "lb") }))
+    : stored;
+  const decimals = m.isMass ? massDecimals() : null;
+  entry.titleEl.textContent = metricLabel(m);
+  entry.chart.setData(pts, w, entry.regEnabled, decimals);
   entry.chart.draw();
-  entry.statsEl.innerHTML = periodStats(pts, w, entry.metric);
+  entry.statsEl.innerHTML = periodStats(pts, w, m, decimals);
 }
 
 function renderAll() {
@@ -807,12 +902,12 @@ function renderAll() {
 function layout() {
   // Accent-insensitive: "musculo" has to match "Músculo …" columns.
   const q = normalize(state.filter.trim());
-  const byMetric = new Map(charts.map(e => [e.metric, e]));
+  const byMetric = new Map(charts.map(e => [e.metric.key, e]));
 
   // Pinned section, in stored order.
   let pinnedShown = 0;
-  for (const metric of state.pinned) {
-    const e = byMetric.get(metric);
+  for (const key of state.pinned) {
+    const e = byMetric.get(key);
     if (!e) continue; // pinned in another dataset; keep the preference, skip it here
     e.card.style.display = "";
     pinnedGrid.appendChild(e.card);
@@ -822,12 +917,15 @@ function layout() {
   // Everything else, in dataset order.
   let allShown = 0;
   for (const e of charts) {
-    e.pinBtn.classList.toggle("on", isPinned(e.metric));
-    e.pinBtn.textContent = isPinned(e.metric) ? "★" : "☆";
-    e.pinBtn.title = isPinned(e.metric) ? "Unpin from the top section" : "Pin to the top section";
-    if (isPinned(e.metric)) continue;
+    const pinned = isPinned(e.metric.key);
+    e.pinBtn.classList.toggle("on", pinned);
+    e.pinBtn.textContent = pinned ? "★" : "☆";
+    e.pinBtn.title = pinned ? "Unpin from the top section" : "Pin to the top section";
+    if (pinned) continue;
     grid.appendChild(e.card); // re-appending keeps dataset order after an unpin
-    const show = !q || normalize(e.metric).includes(q);
+    // Filter on the displayed title, so "kg" finds the mass charts when the
+    // toggle is on kg.
+    const show = !q || normalize(metricLabel(e.metric)).includes(q);
     e.card.style.display = show ? "" : "none";
     if (show) allShown++;
   }
@@ -853,6 +951,14 @@ document.querySelectorAll("#mode-seg button").forEach(btn => {
   btn.addEventListener("click", () => {
     state.mode = btn.dataset.mode;
     document.querySelectorAll("#mode-seg button").forEach(b => b.classList.toggle("active", b === btn));
+    renderAll();
+  });
+});
+document.querySelectorAll("#unit-seg button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.unit === state.unit) return;
+    setUnit(btn.dataset.unit, true);
+    layout();        // titles feed the filter, so re-run it before redrawing
     renderAll();
   });
 });
@@ -893,6 +999,7 @@ window.addEventListener("resize", () => {
 
 /* ---- Boot ---- */
 document.querySelector('#mode-seg button[data-mode="all"]').classList.add("active");
+setUnit(state.unit, false);
 try {
   const embedded = document.getElementById("embedded-csv").textContent;
   if (embedded && embedded.trim() && !embedded.includes("__CSV" + "_DATA__")) {
@@ -908,7 +1015,8 @@ layout();
 document.getElementById("footer").textContent =
   "Tip: click ☆ on a chart to pin it to the top section (saved in this browser). " +
   "Toggle “Trend” for a least-squares regression over the visible period. " +
-  "Switch Week/Month/All and use ‹ › to navigate.";
+  "Switch Week/Month/All and use ‹ › to navigate. " +
+  "Units start out matching the export and stay where you put them.";
 </script>
 </body>
 </html>
