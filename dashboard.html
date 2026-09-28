@@ -285,12 +285,17 @@ function parseCSV(text) {
   return rows;
 }
 
-// RENPHO date is M/D/YY (e.g. 7/23/26) with a separate time column.
+// RENPHO date is M/D/YY (e.g. 7/23/26) with a separate time column. Exports
+// from the 9/28/26 app update write YYYY.MM.DD (2026.09.28) and a 24-hour time
+// instead; the pipeline rewrites those, but a raw export loaded here may not be.
 function parseDate(fecha, hora) {
   if (!fecha) return null;
+  let mo, da, yr;
   const m = fecha.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (!m) { const d = new Date(fecha); return isNaN(d) ? null : d; }
-  let [, mo, da, yr] = m;
+  const iso = fecha.trim().match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
+  if (m) [, mo, da, yr] = m;
+  else if (iso) [, yr, mo, da] = iso;
+  else { const d = new Date(fecha); return isNaN(d) ? null : d; }
   yr = parseInt(yr, 10);
   if (yr < 100) yr += (yr < 70 ? 2000 : 1900);
   let hh = 0, mm = 0, ss = 0;

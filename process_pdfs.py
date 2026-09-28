@@ -204,6 +204,47 @@ def norm_time(s):
     return " ".join(s.strip().split())
 
 
+# --- Fecha / Hora formats ----------------------------------------------------
+# The app has written the date and time two ways. Up to September 2026 exports
+# said "9/17/26" + "6:38:21 AM"; from the 9/28/26 app update they say
+# "2026.09.28" + "07:18:45". Everything downstream speaks the first form — the
+# merge key, the match against the date OCR'd off each report's header (which
+# still prints "Sep 28, 2026 at 7:18:45 AM"), the newest-first sort and the
+# dashboard — so exports are rewritten into it on the way in.
+FECHA_FORMATS = ("%m/%d/%y", "%Y.%m.%d", "%Y-%m-%d", "%Y/%m/%d")
+HORA_FORMATS  = ("%I:%M:%S %p", "%H:%M:%S", "%I:%M %p", "%H:%M")
+
+
+def _strptime_any(s, formats):
+    for f in formats:
+        try:
+            return datetime.strptime(s, f)
+        except ValueError:
+            pass
+    return None
+
+
+def canon_fecha_hora(fecha, hora):
+    """(Fecha, Hora) in the legacy "M/D/YY", "H:MM:SS AM" form, whichever form
+    the export used. A value that parses as neither is returned trimmed but
+    otherwise untouched, so an unexpected format shows up as an unmatched row
+    rather than being silently mangled."""
+    fecha, hora = fecha.strip(), norm_time(hora)
+    d = _strptime_any(fecha, FECHA_FORMATS)
+    t = _strptime_any(hora, HORA_FORMATS)
+    if d:
+        fecha = f"{d.month}/{d.day}/{d:%y}"
+    if t:
+        hora = f"{t.hour % 12 or 12}:{t:%M:%S} {'AM' if t.hour < 12 else 'PM'}"
+    return fecha, hora
+
+
+def _canon_row_dates(d):
+    """Rewrite a row dict's Fecha/Hora in place into the legacy form."""
+    d["Fecha"], d["Hora"] = canon_fecha_hora(d.get("Fecha", ""), d.get("Hora", ""))
+    return d
+
+
 def record_warnings(rec):
     """Consistency check for a single record: flag any triple whose shown %
     disagrees with mass/std*100 (a likely OCR/transcription slip). Small masses
@@ -279,8 +320,8 @@ def _backup(path):
 def _row_dt(d):
     """Parse a row dict's Fecha+Hora into a datetime for sorting; unparseable -> min."""
     try:
-        return datetime.strptime(f"{d.get('Fecha', '').strip()} {norm_time(d.get('Hora', ''))}",
-                                 "%m/%d/%y %I:%M:%S %p")
+        fecha, hora = canon_fecha_hora(d.get("Fecha", ""), d.get("Hora", ""))
+        return datetime.strptime(f"{fecha} {hora}", "%m/%d/%y %I:%M:%S %p")
     except Exception:
         return datetime.min
 
@@ -369,14 +410,17 @@ def _merge_health_csv(incoming_path):
     # Canonical columns: existing main header, plus any new columns the export added.
     cols = list(mh) + [c for c in ih if c not in mh]
 
+    # Both sides go through canon_fecha_hora, so a new-format export lands on the
+    # same key as the old-format row it refreshes — and a main CSV that already
+    # took in a new-format row before this existed is healed on the next merge.
     by_key = {}
     for r in mrows:
-        d = dict(zip(mh, r))
-        by_key[(d.get("Fecha", "").strip(), norm_time(d.get("Hora", "")))] = d
+        d = _canon_row_dates(dict(zip(mh, r)))
+        by_key[(d["Fecha"], d["Hora"])] = d
     added = updated = 0
     for r in irows:
-        d = dict(zip(ih, r))
-        k = (d.get("Fecha", "").strip(), norm_time(d.get("Hora", "")))
+        d = _canon_row_dates(dict(zip(ih, r)))
+        k = (d["Fecha"], d["Hora"])
         if k in by_key:
             by_key[k].update(d)      # refresh fields from the newer export
             updated += 1
@@ -384,15 +428,49 @@ def _merge_health_csv(incoming_path):
             by_key[k] = d
             added += 1
 
-    rows = sorted(by_key.values(), key=_row_dt, reverse=True)   # newest first
+    _write_main_csv(cols, by_key.values())
+    return True, added, updated
+
+
+def _write_main_csv(cols, rows):
+    """Write row dicts to MAIN_CSV newest-first, renumbering `No.`."""
+    rows = sorted(rows, key=_row_dt, reverse=True)
     for i, d in enumerate(rows, 1):
         d["No."] = str(i)
-
     with open(MAIN_CSV, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(cols)
         w.writerows([[d.get(c, "") for c in cols] for d in rows])
-    return True, added, updated
+
+
+def _heal_main_csv_dates():
+    """Rewrite MAIN_CSV into legacy Fecha/Hora form if any row isn't in it yet.
+    Merges already canonicalize, but a main CSV that took in a new-format export
+    before they did keeps that row unmatched and mis-sorted until the next CSV
+    arrives — which may be never, if only a PDF comes in. No-op when clean."""
+    if not os.path.exists(MAIN_CSV):
+        return
+    header, rows = _read_csv(MAIN_CSV)
+    if "Fecha" not in header or "Hora" not in header:
+        return
+    dicts = [dict(zip(header, r)) for r in rows]
+    # Compared through norm_time: the app puts a narrow no-break space before
+    # AM/PM, which every key already treats as a plain one — not a reason to heal.
+    stale = sum(1 for d in dicts
+                if canon_fecha_hora(d.get("Fecha", ""), d.get("Hora", ""))
+                != (d.get("Fecha", "").strip(), norm_time(d.get("Hora", ""))))
+    if not stale:
+        return
+    _backup(MAIN_CSV)
+    # Canonicalizing can make two rows the same one (one export in each format);
+    # keep the later row's values, as a merge would.
+    by_key = {}
+    for d in dicts:
+        d = _canon_row_dates(d)
+        by_key.setdefault((d["Fecha"], d["Hora"]), {}).update(d)
+    _write_main_csv(header, by_key.values())
+    print(f"  {os.path.basename(MAIN_CSV)}: rewrote {stale} row(s) from the new "
+          f"Fecha/Hora format")
 
 
 # --- iCloud placeholders -----------------------------------------------------
@@ -643,6 +721,7 @@ def cmd_auto(build=True):
 
 
 def cmd_build():
+    _heal_main_csv_dates()
     recs = load_records()
     by_dt = {(r["date"], norm_time(r["time"])): r for r in recs}
 
