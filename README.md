@@ -109,10 +109,10 @@ See **"Setup: run the ingest periodically on a Mac"** at the top. It covers Full
 ```
 sh launcher/build.sh
 ```
-Produces a **universal** `RENPHO Ingest.app` (x86_64 + arm64) so one build runs on an Apple Silicon Mac *and* on the 2014 Intel Mac mini. Three things the build and launcher have to get right for the Intel box:
+Produces a **universal** `RENPHO Ingest.app` (x86_64 + arm64) so one build runs on Apple Silicon *and* Intel Macs. Three things the build and launcher have to get right for Intel:
 
 - **Architecture.** An arm64-only build fails on Intel with `zsh: bad CPU type in executable`.
-- **Deployment target.** `-mmacosx-version-min` is a single global flag, so each arch is compiled separately and merged with `lipo`: x86_64 → **10.13**, arm64 → **11.0** (the earliest macOS on Apple Silicon). Without this the SDK stamps the *current* macOS as the minimum — a binary marked "requires macOS 26" won't launch on the mini, which tops out at **Monterey 12**.
+- **Deployment target.** `-mmacosx-version-min` is a single global flag, so each arch is compiled separately and merged with `lipo`: x86_64 → **10.13**, arm64 → **11.0** (the earliest macOS on Apple Silicon). Without this the SDK stamps the *current* macOS as the minimum — a binary marked "requires macOS 26" won't launch on an older Mac that can't run it.
 - **Homebrew's prefix differs.** It's `/opt/homebrew` on Apple Silicon but `/usr/local` on Intel. The launcher tries `/opt/homebrew/bin/python3`, then `/usr/local/bin/python3`, then `/usr/bin/python3` (needs Command Line Tools), and `$RENPHO_PYTHON` overrides all of them. `PATH` includes both prefixes so `tesseract` resolves either way. The repo path is derived from the app's own location rather than hardcoded, so the checkout can live anywhere.
 
 After rebuilding, **re-grant Full Disk Access**: the bundle is ad-hoc signed, so its TCC identity comes from the binary and macOS treats a rebuilt app as a different one. Remove the old entry and re-add it (step 1 above) on each machine.
@@ -148,7 +148,7 @@ Headless push needs a credential that works with no prompt: an SSH key with no p
 ### Commit identity
 Published commits are authored as `Francisco Candalija <fcandalija@users.noreply.github.com>` — a GitHub noreply address, so no real inbox ends up in a public log while commits still link to the account.
 
-The email is **pinned in `process_pdfs.py`** (`PUBLISH_EMAIL`, passed as `git -c user.email=…`) rather than read from git config, because this script also runs on another machine whose global `~/.gitconfig` is a work address. Pinning it means no machine's ambient config can leak that into the public repo. Override with `$RENPHO_GIT_EMAIL`. This repo also sets `user.email` locally for hand-made commits; the global config is left alone so work repos are unaffected.
+The email is **pinned in `process_pdfs.py`** (`PUBLISH_EMAIL`, passed as `git -c user.email=…`) rather than read from git config, so that whatever a machine's global `~/.gitconfig` says, it can't leak into the public repo. Override with `$RENPHO_GIT_EMAIL`. This repo also sets `user.email` locally for hand-made commits; the global config is left alone.
 
 
 ## Adding report PDFs manually

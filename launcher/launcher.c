@@ -10,7 +10,7 @@
  * Built as a universal binary so one app runs on both Apple Silicon and Intel
  * (see build.sh). Nothing here is arch-specific, but two things used to be
  * machine-specific and are now resolved at runtime, because the same app runs on
- * an Apple Silicon Mac and a 2014 Intel Mac mini:
+ * Apple Silicon and Intel Macs:
  *
  *   - python3's location: Homebrew is /opt/homebrew on Apple Silicon but
  *     /usr/local on Intel, so the candidates are tried in order.

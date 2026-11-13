@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Build "RENPHO Ingest.app" as a universal (x86_64 + arm64) binary, so the same
-# app runs on Apple Silicon and on the 2014 Intel Mac mini.
+# app runs on both Apple Silicon and Intel Macs.
 #
 #   sh launcher/build.sh
 #
@@ -10,8 +10,8 @@
 #   * Per-slice deployment targets. -mmacosx-version-min is a single global flag,
 #     so each arch is compiled separately and merged with lipo. Without this the
 #     SDK stamps the current macOS (26.x) as the minimum and the app refuses to
-#     launch on the mini, which tops out at macOS Monterey 12.
-#       - x86_64 -> 10.13, comfortably below Monterey
+#     launch on older Macs.
+#       - x86_64 -> 10.13
 #       - arm64  -> 11.0, the earliest macOS that ran on Apple Silicon
 #
 #   * Re-granting Full Disk Access. The bundle is ad-hoc signed, so its TCC

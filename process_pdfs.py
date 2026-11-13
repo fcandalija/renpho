@@ -875,8 +875,8 @@ GIT_TIMEOUT  = 120                     # per-git-command cap, so a hung network 
                                        # can't outlast the 2-minute poll interval
 
 # Identity for the published commits. Pinned here rather than left to git config
-# because this script also runs on other machines, whose global ~/.gitconfig is a
-# work address — and this repo is public. Overridable with $RENPHO_GIT_EMAIL.
+# because this script runs on several machines and this repo is public: no
+# machine's global ~/.gitconfig should leak into the log. Overridable with $RENPHO_GIT_EMAIL.
 PUBLISH_EMAIL = os.environ.get("RENPHO_GIT_EMAIL",
                                "fcandalija@users.noreply.github.com")
 
@@ -919,7 +919,7 @@ def _git_out(*args):
 
 def _git_commit(msg):
     """Commit ONLY the dashboard, with the publish identity forced on. `-c` beats
-    any global user.email, so a work address can't end up in the public log."""
+    any global user.email, so no other address can end up in the public log."""
     return _git("-c", f"user.email={PUBLISH_EMAIL}", "commit", "-m", msg,
                 "--only", "--", PUBLISH_FILE)
 
