@@ -18,5 +18,13 @@
 !pdfimg.py
 !ocr_segmental.py
 
-# To publish something else (e.g. the README) un-ignore it here explicitly, e.g.:
-#   !README.md
+# Setup docs + what's needed to schedule the pipeline on a new Mac
+# (launcher app source and the launchd agent template). No data or secrets.
+!README.md
+!renpho-ingest.plist
+!launcher/
+!launcher/build.sh
+!launcher/launcher.c
+!launcher/Info.plist
+
+# To publish something else, un-ignore it here explicitly.

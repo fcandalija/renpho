@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.francisco.renpho-ingest</string>
+
+    <!-- Runs the signed launcher app (NOT python directly): launchd gives it a
+         stable TCC identity, you grant that app Full Disk Access once, and the
+         python child it spawns inherits the grant so it can read the iCloud
+         inbox. See "Hands-off ingestion" in README.md. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/fcandalija/repos/renpho/RENPHO Ingest.app/Contents/MacOS/renpho-ingest</string>
+    </array>
+
+    <!-- Poll every 2 minutes. iCloud Drive changes are written by the bird/cloudd
+         daemon and often DON'T emit the fsevents that launchd WatchPaths relies on,
+         so a timer is the reliable trigger for an iCloud folder. WatchPaths is kept
+         as a best-effort fast path for the cases where it does fire. -->
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <key>WatchPaths</key>
+    <array>
+        <string>/Users/fcandalija/Library/Mobile Documents/com~apple~CloudDocs/RENPHO-inbox</string>
+    </array>
+
+    <!-- Also process anything already sitting there when the agent loads / on login. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/fcandalija/repos/renpho</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/fcandalija/repos/renpho/_work/ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/fcandalija/repos/renpho/_work/ingest.log</string>
+</dict>
+</plist>
